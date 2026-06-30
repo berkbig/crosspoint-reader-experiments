@@ -1,23 +1,36 @@
 #include "TextUtils.h"
 #include <algorithm>
+#include <cctype>
+#include <sstream>
 
 TextUtils::WrappedText TextUtils::WrapText(const std::string& text, int maxCharsPerLine) {
   WrappedText result;
+  std::stringstream ss(text);
   std::string line;
+  std::string word;
 
-  for (char c : text) {
-    if (c == '\n') {
+  while (ss >> word) {
+    // Check if adding this word to the current line would exceed the limit
+    std::string testLine = line.empty() ? word : line + " " + word;
+    
+    if (static_cast<int>(testLine.length()) <= maxCharsPerLine) {
+      // Word fits on current line
+      line = testLine;
+    } else if (!line.empty()) {
+      // Word doesn't fit, flush current line and start a new one
       result.lines.push_back(line);
-      line.clear();
-    } else if (static_cast<int>(line.length()) >= maxCharsPerLine) {
-      result.lines.push_back(line);
-      line.clear();
-      line += c;
+      line = word;
     } else {
-      line += c;
+      // Word is longer than maxCharsPerLine - break it at character boundary
+      while (static_cast<int>(word.length()) > maxCharsPerLine) {
+        result.lines.push_back(word.substr(0, maxCharsPerLine));
+        word = word.substr(maxCharsPerLine);
+      }
+      line = word;
     }
   }
 
+  // Don't forget the last line
   if (!line.empty()) {
     result.lines.push_back(line);
   }
