@@ -13,6 +13,7 @@
 #include "home/FileBrowserActivity.h"
 #include "home/HomeActivity.h"
 #include "home/RecentBooksActivity.h"
+#include "interactive_fiction/InteractiveFictionActivity.h"
 #include "network/CrossPointWebServerActivity.h"
 #include "reader/ReaderActivity.h"
 #include "settings/OpdsServerListActivity.h"
@@ -206,6 +207,10 @@ void ActivityManager::goToBoot() { replaceActivity(std::make_unique<BootActivity
 
 void ActivityManager::goToFullScreenMessage(std::string message, EpdFontFamily::Style style) {
   replaceActivity(std::make_unique<FullScreenMessageActivity>(renderer, mappedInput, std::move(message), style));
+}
+
+void ActivityManager::goToInteractiveFiction() {
+  replaceActivity(std::make_unique<InteractiveFictionActivity>(renderer, mappedInput));
 }
 
 void ActivityManager::goHome(HomeMenuItem initialMenuItem) {
