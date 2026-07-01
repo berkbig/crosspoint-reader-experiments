@@ -1,0 +1,84 @@
+﻿title: Start
+tags: start
+---
+<<declare $playerName = "Traveller">>
+<<declare $coins = 0>>
+<<declare $hasMap = false>>
+<<declare $townVisits = 0>>
+Narrator: Welcome, {$playerName}! You stand at a crossroads.
+<<if visited("Town")>>
+Narrator: You have visited the town {$townVisits} time(s) so far.
+<<endif>>
+-> Explore the forest
+    <<jump Forest>>
+-> Visit the town
+    <<jump Town>>
+-> Check your inventory
+    <<detour Inventory>>
+    <<jump Start>>
+===
+
+title: Forest
+---
+<<if visited("Forest")>>
+Narrator: The forest feels familiar now.
+<<else>>
+Narrator: The forest is cool and quiet. Your first visit here.
+<<endif>>
+-> Follow the river
+    Narrator: You find 10 gold coins beside the water.
+    <<set $coins = $coins + 10>>
+    Narrator: You now have {$coins} coins.
+    <<jump Ending>>
+-> Hunt for treasure <<if $coins < 20>>
+    <<set $coins = $coins + 5>>
+    Narrator: You found 5 coins! Total: {$coins}.
+    <<jump Forest>>
+-> Return to the crossroads
+    <<jump Start>>
+===
+
+title: Town
+---
+<<set $townVisits = $townVisits + 1>>
+Narrator: Town visit number {$townVisits}. You have {$coins} coins.
+-> Talk to the merchant <<if !$hasMap>>
+    Merchant: I sell old maps. Price: 5 coins.
+    -> Buy the map <<if $coins >= 5>>
+        <<set $coins = $coins - 5>>
+        <<set $hasMap = true>>
+        Merchant: Safe travels, {$playerName}!
+        <<jump Town>>
+    -> Decline
+        Merchant: Another time, then.
+        <<jump Town>>
+-> Show your map <<if $hasMap>>
+    Narrator: The map reveals a hidden path!
+    <<jump Ending>>
+-> Return to the crossroads
+    <<jump Start>>
+===
+
+title: Inventory
+---
+Narrator: === Inventory ===
+<<if $hasMap>>
+Narrator: * Old map (acquired for 5 coins)
+<<else>>
+Narrator: (no items)
+<<endif>>
+Narrator: Coins: {$coins}
+===
+
+title: Ending
+---
+Narrator: Adventure complete, {$playerName}!
+Narrator: Final coin count: {$coins}.
+<<if $coins >= 10>>
+Narrator: You ended the adventure in profit!
+<<endif>>
+-> Exit
+    Narrator: Thanks for testing the runtime!
+-> Play again
+    <<jump Start>>
+===

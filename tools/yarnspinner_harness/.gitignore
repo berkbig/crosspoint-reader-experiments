@@ -1,0 +1,10 @@
+# Build artifacts
+out/
+*.obj
+*.exe
+*.pdb
+
+# Build and run logs
+build.log
+run.log
+run.err.log

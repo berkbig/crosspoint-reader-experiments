@@ -1,0 +1,81 @@
+syntax = "proto3";
+package Yarn;
+
+message Program {
+    string name = 1;
+    map<string, Node> nodes = 2;
+    map<string, Operand> initial_values = 3;
+    int32 language_version = 4;
+}
+
+message Node {
+    string name = 1;
+    repeated Instruction instructions = 7;
+    repeated Header headers = 6;
+    reserved 2, 3, 4, 5;
+}
+
+message Header {
+    string key = 1;
+    string value = 2;
+}
+
+message Instruction {
+    oneof InstructionType {
+        JumpToInstruction jumpTo = 1;
+        PeekAndJumpInstruction peekAndJump = 2;
+        RunLineInstruction runLine = 3;
+        RunCommandInstruction runCommand = 4;
+        AddOptionInstruction addOption = 5;
+        ShowOptionsInstruction showOptions = 6;
+        PushStringInstruction pushString = 7;
+        PushFloatInstruction pushFloat = 8;
+        PushBoolInstruction pushBool = 9;
+        JumpIfFalseInstruction jumpIfFalse = 10;
+        PopInstruction pop = 11;
+        CallFunctionInstruction callFunc = 12;
+        PushVariableInstruction pushVariable = 13;
+        StoreVariableInstruction storeVariable = 14;
+        StopInstruction stop = 15;
+        RunNodeInstruction runNode = 16;
+        PeekAndRunNodeInstruction peekAndRunNode = 17;
+        DetourToNodeInstruction detourToNode = 18;
+        PeekAndDetourToNode peekAndDetourToNode = 19;
+        ReturnInstruction return = 20;
+        AddSaliencyCandidateInstruction addSaliencyCandidate = 21;
+        AddSaliencyCandidateFromNodeInstruction addSaliencyCandidateFromNode = 22;
+        SelectSaliencyCandidateInstruction selectSaliencyCandidate = 23;
+    }
+
+    message PeekAndJumpInstruction {}
+    message PeekAndRunNodeInstruction {}
+    message ShowOptionsInstruction {}
+    message PushStringInstruction { string value = 1; }
+    message PushFloatInstruction { float value = 1; }
+    message PushBoolInstruction { bool value = 1; }
+    message JumpToInstruction { int32 destination = 1; }
+    message RunLineInstruction { string lineID = 1; int32 substitutionCount = 2; }
+    message RunCommandInstruction { string commandText = 1; int32 substitutionCount = 2; }
+    message AddOptionInstruction { string lineID = 1; int32 destination = 2; int32 substitutionCount = 3; bool hasCondition = 4; }
+    message JumpIfFalseInstruction { int32 destination = 1; }
+    message PopInstruction {}
+    message CallFunctionInstruction { string functionName = 1; }
+    message PushVariableInstruction { string variableName = 1; }
+    message StoreVariableInstruction { string variableName = 1; }
+    message StopInstruction {}
+    message RunNodeInstruction { string nodeName = 1; }
+    message DetourToNodeInstruction { string nodeName = 1; }
+    message PeekAndDetourToNode {}
+    message ReturnInstruction {}
+    message AddSaliencyCandidateInstruction { string contentID = 1; int32 complexityScore = 2; int32 destination = 3; }
+    message AddSaliencyCandidateFromNodeInstruction { string nodeName = 1; int32 destination = 2; }
+    message SelectSaliencyCandidateInstruction {}
+}
+
+message Operand {
+    oneof value {
+        string string_value = 1;
+        bool bool_value = 2;
+        float float_value = 3;
+    }
+}
