@@ -1,0 +1,182 @@
+title: Jungle_Initialisation
+position: 36,-36
+---
+<<declare $Butterfly_Chase=0>>
+<<set $Butterfly_Chase=0>>
+===
+
+title: Jungle_Main
+position: 306,-32
+---
+<<detour JungleEnvironment>>
+<<if $Random_Chance_Unlikely>>
+    <<detour Jungle_Flavour>>
+<<endif>>
+<<jump Jungle_Main>>
+===
+
+
+
+title: JungleEnvironment
+when: always
+position: 1822,-29
+---
+You struggle through the undergrowth making slow but steady progress.
+===
+title: JungleEnvironment
+when: always
+position: 1619,-31
+---
+You follow a faint path for some time. 
+=> Inhuman footprints are visible in the exposed earth. <<once if $Random_Chance_Likely==true>> 
+=> You make rapid progress until it disappears into the underbrush 
+    <<set $Adventure_Progress=$Adventure_Progress+2>>
+=> The path ends at a sheer ravine - a collapsed bridge once crossed the path here
+===
+title: JungleEnvironment
+when: always
+position: 1411,-48
+---
+<<detour Challenge>>
+===
+title: JungleEnvironment
+when: always
+position: 1031,198
+---
+You walk out into a clearing. Sun peeks through the thick canopy illuminating the scene
+===
+title: JungleEnvironment
+when: always
+position: 1472,109
+---
+Thick undergrowth closes in on either side of the path forming a thin claustrophobic tunnel. You hurry through as fast as you can.
+===
+title: JungleEnvironment
+when: always
+position: 1487,-210
+---
+The view in front of you opens out into an awe inspiring sea of leaf and trees.
+===
+title: JungleEnvironment
+when: always
+position: 1224,122
+---
+You walk awhile along the banks of a wide river. Something stirs in the depths.
+===
+title: JungleEnvironment
+when: $Random_Chance_Balanced==true
+position: 1210,-213
+---
+The path opens out to reveal a beautiful crystal pool. The waters look cool and inviting
+-> Swim a while
+    <<if $Random_Chance_Unlikely>>
+        Something stirs in the bottom of the pool and grabs at your legs. YOU struggle in vain as you are pulled under
+        <<jump End>>
+    <<else>>
+        You take 10 minutes for a refreshing swim in the cool water. As you stride damply back into the jungle a strange splash comes from behind you. 
+        <<return>>
+    <<endif>>
+->Carry on
+    <<return>>
+===
+title: JungleEnvironment
+when: $Butterfly_Chase > 3 and $Random_Chance_Balanced==true
+position: 696,-37
+---
+Eyes still fully focused on the butterflies ahead you burst out of the undergrowth and over an unseen cliff. 
+<<detour Cliff_Fall>>
+===
+title: JungleEnvironment
+when:  $Random_Chance_Balanced==true
+position: 25,-194
+---
+=>You come across an abandoned campsite under a large tree.
+=>Set into a small cave in a nearby cliff you see an abandoned campfire. The area shows signs of a hasty exit with items strewn across the cliff mouth
+=>Nestled into a small overhang in a nearby cliff you find the remains of a small camp
+=>The clearing opens into a well organised camp
+=>Perched in the low canopy of an enormous tree you see the remains of a camp
+<<detour Camp_Main>>
+===
+title: JungleEnvironment
+when: $Random_Chance_Balanced==true
+position: 985,-40
+---
+<<detour Smithy_Chapter>>
+===
+title: JungleEnvironment
+when: $Random_Chance_Balanced==true
+position: 985,-40
+---
+<<detour Skykin_Chapter>>
+===
+title: JungleEnvironment
+when: $Random_Chance_Balanced==true
+position: 985,-40
+---
+<<detour HiddenLegacy_Chapter>>
+===
+title: JungleEnvironment
+when: $Random_Chance_Unlikely==true
+position: 985,-40
+---
+Set into the cliff wall to your right is a dark entrance just wide enough for you to squeeze through sideways
+-> Investigate
+    You squeeze into the entrance, and tumble immediately into a larger cave. You are disoriented from your fall and can no longer see the entrance.
+    <<detour Cave_Main>>
+-> Carry on 
+    You leave the caves for another day.
+===
+
+title: Jungle_Flavour
+when: always
+position: 394,670
+---
+A brightly coloured bird bursts from the undergrowth and flies off squawking loudly. 
+===
+title: Jungle_Flavour
+when: always
+position: 835,438
+---
+The undergrowth ahead of you rustles as if something large and heavy is passing through. You decide not to investigate too closely.  
+===
+title: Jungle_Flavour
+when: always
+position: 842,658
+---
+=> A spray of rainbow butterflies rises from the Jungle floor and flies off to the north
+=> Through the undergrowth in front of you a cloud of bright butterflies appears
+->Follow them
+    <<set $Butterfly_Chase=$Butterfly_Chase+1 >>
+->Carry on
+    You ignore them and follow your path forward
+===
+title: Jungle_Flavour
+when: always
+position: 619,665
+---
+Eyes appear briefly in the undergrowth in front of you. You stoop to investigate but whatever was attached to them is long gone.
+===
+title: Jungle_Flavour
+when: always
+position: 597,468
+---
+A bright green parrot is sat on a branch in front of you. You have a strange feeling you are being watched.
+===
+title: Jungle_Flavour
+when: always
+position: 371,451
+---
+A small bright green snake drops from the vines above 
+===
+title: Jungle_Flavour
+when: always
+position: 371,451
+---
+The sun bursts suddenly through the canopy in front of you leaving you temporarily blind and confused.
+===
+title: Jungle_Flavour
+when: always
+position: 371,451
+---
+You inch your way across a mossy log. Far below you something roars.
+===

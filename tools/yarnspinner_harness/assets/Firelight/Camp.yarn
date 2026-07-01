@@ -1,0 +1,33 @@
+title: Camp_Main
+---
+-> Search camp
+    <<detour Search_Camp>>
+-> Rest
+    => You sit awhile next to the campfire and rest. The sounds of the jungle night echo around you and you feel refreshed
+    => Stars peek bright through the jungle canopy above you as you lay down to sleep. It feels like weeks since you saw the unobstructed sky. 
+    => Smithy seats himself by the campfire and starts to hum a mournful wordless tune. The Flames form brief fragments of long past battles as you watch <<if $Smithy_Ally== true>>
+-> Continue on your way
+    You leave the camp undisturbed and walk on by
+<<if $HasTorch==true and $IsTorchLit==false>>
+    You take the opportunity to light your torch from the embers of the dying camfire
+<<endif>>
+===
+
+title: Search_Camp
+position: -74,263
+---
+Digging through the area around the campsite you gather together any usable items
+<<if $Random_Chance_Unlikely==true>>
+   You find a grappling rope
+    <<set $HasRope=true>>
+<<elseif $Random_Chance_Likely==true>>
+    You find a half full flask of clear water 
+    <<set $HasFlask=true>>
+<<elseif $Random_Chance_Likely==true>>
+    You find an unlit torch 
+    <<set $HasTorch=true>>
+    You add a small pile of gold coins to your treasure pile
+    <<set $Treasure=$Treasure+random_range(50,100)>>
+<<endif>>
+<<set $Adventure_Progress=$Adventure_Progress+1>>
+===

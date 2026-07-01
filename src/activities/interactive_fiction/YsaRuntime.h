@@ -94,8 +94,8 @@ class YsaRuntime {
 
   uint16_t version = 0;
   std::map<std::string, Node> nodes;  // Parsed nodes cache
-  std::map<std::string, NodeIndex> nodeIndex;  // All nodes: offset + count
-  std::vector<uint8_t> fileData;  // Raw file buffer for on-demand parsing
+  std::map<std::string, NodeIndex> nodeIndex;  // All nodes: offset + count (no file buffer)
+  std::string storagePath;  // Path for reopening file on-demand
   std::map<std::string, std::string> lineTable;
   std::map<std::string, Value> initialValues;
 
@@ -124,7 +124,7 @@ class YsaRuntime {
   bool readF32(const std::vector<uint8_t>& data, size_t& offset, float& out) const;
   bool readString(const std::vector<uint8_t>& data, size_t& offset, std::string& out) const;
 
-  bool loadFromBuffer(const std::vector<uint8_t>& data);
+  bool buildNodeIndex(const std::vector<uint8_t>& headerData);
   bool ensureNodeLoaded(const std::string& nodeName);
 
   const Operand* requireOperand(const Instruction& ins, size_t index, OperandType type);

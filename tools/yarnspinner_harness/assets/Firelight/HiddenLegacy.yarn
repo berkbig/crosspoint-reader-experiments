@@ -1,0 +1,68 @@
+title: HiddenLegacy_Initialisation
+---
+<<declare $Cages_Found=0>>
+<<declare $Camp_Found=false>>
+===
+
+title: Test_HiddenLegacy_Chapter
+---
+<<detour HiddenLegacy_Chapter>>
+<<jump Test_HiddenLegacy_Chapter>>
+===
+
+title: HiddenLegacy_Chapter
+---
+<<if $Cages_Found<3>>
+    <<detour HiddenLegacy_Cages>>
+    <<set $Cages_Found=$Cages_Found+1>>
+<<elseif $Camp_Found==false>>
+    <<detour HiddenLegacy_TrappedSkykin>>
+<<endif>>
+===
+
+title: HiddenLegacy_Cages
+---
+=>A cage hangs in the trees, hanging from a rope tied to a stake in the undergrowth
+=>Lying on it's side on the jungle floor you see a small birdcage
+=>An ornate birdcage is propped between the 2 lower boughs of a nearby tree
+->Investigate Cage
+    <<detour Cage_Details>>
+->Carry on
+    <<return>>
+===
+
+title: HiddenLegacy_TrappedSkykin
+---
+Swaying and squawking wildly in the canopy above you is a small birdcage, currently host to a large angry parrot like bird. The rope it is hanging from is attached just above head height on a nearby tree.
+-> Use Grapple to pull the cage down <<if $HasRope==true>>
+-> Throw Flask at cage door <<if $HasFlask==true>>
+    The flask impacts the cage with a loud smash. The door springs open releasing a large, wet, angry bird who flies immediately away.
+-> Burn the rope <<if $HasTorch==true and $IsTorchLit==true>>
+    The bird starts squawking even louder as the rope starts to fray. It snaps and the cage smashes on the ground releasing a ball of fury and feathers. YOu shield your face as it flies directly towards you and lose sight as it escapes into the forest
+-> Gather small rocks to throw at the door.
+    Carefully aiming rocks at the cage door you manage to spring the lock. The large bird fixes you with a steely glare, and then drops to the floor. Looking over its shoulder as if to confirm you are following it starts to hop into the undergrowth.
+    ->Follow
+        YOu push through the brush following the curious beast.
+        <<detour HiddenLegacy_Campsite>>
+    ->Carry on
+        <<return>>
+===
+
+title: Cage_Details
+---
+=>Peering inside the open door, remnants of what look like a peanut butter sandwich are spread around the inside <<once>>
+=>The Cage door is shut and a very irate looking rat is trapped inside. As you drop the cage to the floor the door shakes open and the rat disappears into a nearby bush
+=>Rotten fruit coats the floor of the cage. A swarm of small flies buzzes around you as they fly away from their lunch.
+
+===
+
+title: HiddenLegacy_Campsite
+---
+<<set $Camp_Found=true>>
+Some distance away the bird stops in the middle of what appears to be a recently abandoned campsite. It turns to face you with a surprising intelligence in its eyes and starts to squawk loudly. Eventually, faced with your total lack of understanding it glares and flies rapidly away.
+->Investigate campsite
+    Trawling throught the campsite you find Journal and notes scattered everywhere. They appear to be the work of a Professor Barnaby - once of Farenstone Manor and detail his attempts to capture the large intelligents birds he calls Skykin.
+    He seems to think these birds are associated with the shrines and temples throughout the jungle, but his notes are scattershot and you fail to understand the connection.
+->Try to follow the bird
+    THe bird is flying fast and low through the jungle and you struggle to keep up for even a few minutes. Eventually you abandon the chase and carry on through the jungle.
+===

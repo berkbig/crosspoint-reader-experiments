@@ -126,6 +126,7 @@ bool YsaRuntime::loadFromStorage(const char* path) {
   lineTable.clear();
   initialValues.clear();
   transcript.clear();
+  storagePath = path;
 
   HalFile file;
   if (!Storage.openFileForRead("IF", path, file) || !file) {
@@ -137,24 +138,24 @@ bool YsaRuntime::loadFromStorage(const char* path) {
     return setError("Invalid story size");
   }
 
-  // Read file in chunks into buffer
-  constexpr size_t BUFFER_SIZE = 4096;
-  uint8_t buffer[BUFFER_SIZE];
-  std::vector<uint8_t> allData;
-  allData.reserve(fileSize);
+  // Read file in 4KB chunks to build index WITHOUT loading entire file
+  constexpr size_t CHUNK_SIZE = 4096;
+  uint8_t chunkBuffer[CHUNK_SIZE];
+  std::vector<uint8_t> indexData;  // Small buffer for header only
+  indexData.reserve(std::min(fileSize, CHUNK_SIZE * 2));
   
   size_t bytesRead = 0;
-  while (bytesRead < fileSize) {
-    const size_t toRead = std::min(BUFFER_SIZE, fileSize - bytesRead);
-    const int result = file.read(buffer, toRead);
+  while (bytesRead < fileSize && indexData.size() < indexData.capacity()) {
+    const size_t toRead = std::min(CHUNK_SIZE, fileSize - bytesRead);
+    const int result = file.read(chunkBuffer, toRead);
     if (result <= 0) {
-      return setError("Failed to read complete story file");
+      return setError("Failed to read story file");
     }
-    allData.insert(allData.end(), buffer, buffer + result);
+    indexData.insert(indexData.end(), chunkBuffer, chunkBuffer + result);
     bytesRead += result;
   }
 
-  if (!loadFromBuffer(allData)) {
+  if (!buildNodeIndex(indexData)) {
     return false;
   }
 
@@ -172,63 +173,79 @@ bool YsaRuntime::ensureNodeLoaded(const std::string& nodeName) {
   // Must be in index for us to load it
   auto indexIt = nodeIndex.find(nodeName);
   if (indexIt == nodeIndex.end()) {
-   return setError(std::string("Node not found in index: ") + nodeName);
+   return setError(std::string("Node not found: ") + nodeName);
   }
 
   const NodeIndex& idx = indexIt->second;
-  const size_t nodeStartOffset = idx.fileOffset;
 
-  // Parse just this node from fileData
-  size_t offset = nodeStartOffset;
-  std::string parsedNodeName;
-  uint16_t instructionCount = 0;
-
-  if (!readString(fileData, offset, parsedNodeName) || !readU16(fileData, offset, instructionCount)) {
-   return setError("Failed to read node header during lazy load");
+  // Reopen file to read just this node
+  HalFile file;
+  if (!Storage.openFileForRead("IF", storagePath.c_str(), file) || !file) {
+   return setError(std::string("Failed to reopen story: ") + storagePath);
   }
 
-  if (parsedNodeName != nodeName) {
-   return setError(std::string("Node name mismatch: expected ") + nodeName);
+  // We need to read from the file offset where instructions start
+  // But we don't have seek() on HalFile, so we read from start and skip to the offset
+  // This is inefficient but necessary given the HAL API
+  
+  std::vector<uint8_t> buffer;
+  buffer.reserve(std::min(size_t(100000), idx.fileOffset + 10000));
+  
+  uint8_t readBuf[4096];
+  size_t totalRead = 0;
+  size_t targetSize = idx.fileOffset + 10000;  // Read enough to cover the node
+  
+  while (totalRead < targetSize && buffer.size() < targetSize) {
+   int n = file.read(readBuf, sizeof(readBuf));
+   if (n <= 0) break;
+   buffer.insert(buffer.end(), readBuf, readBuf + n);
+   totalRead += n;
   }
 
-  // Parse instructions
+  if (buffer.size() < idx.fileOffset + 2) {
+   return setError("File too small to contain node");
+  }
+
+  // Parse just this node's instructions
+  size_t offset = idx.fileOffset;
   Node node;
-  node.instructions.reserve(instructionCount);
-  for (uint16_t j = 0; j < instructionCount; ++j) {
+  node.instructions.reserve(idx.instructionCount);
+
+  for (uint16_t j = 0; j < idx.instructionCount; ++j) {
    uint16_t instructionSize = 0;
-   if (!readU16(fileData, offset, instructionSize) || offset + instructionSize > fileData.size()) {
+   if (!readU16(buffer, offset, instructionSize) || offset + instructionSize > buffer.size()) {
      return setError("Invalid instruction size during lazy load");
    }
    const size_t instructionEnd = offset + instructionSize;
 
    Instruction ins;
    uint8_t operandCount = 0;
-   if (!readU8(fileData, offset, ins.opcode) || !readU8(fileData, offset, operandCount)) {
+   if (!readU8(buffer, offset, ins.opcode) || !readU8(buffer, offset, operandCount)) {
      return setError("Invalid instruction header during lazy load");
    }
 
    for (uint8_t k = 0; k < operandCount; ++k) {
      uint8_t typeRaw = 0;
-     if (!readU8(fileData, offset, typeRaw)) {
+     if (!readU8(buffer, offset, typeRaw)) {
        return setError("Invalid operand type during lazy load");
      }
      Operand operand;
      operand.type = static_cast<OperandType>(typeRaw);
      switch (operand.type) {
        case OperandType::U16:
-         if (!readU16(fileData, offset, operand.u16Value)) return setError("Invalid u16 operand during lazy load");
+         if (!readU16(buffer, offset, operand.u16Value)) return setError("Invalid u16 operand during lazy load");
          break;
        case OperandType::Bool: {
          uint8_t value = 0;
-         if (!readU8(fileData, offset, value)) return setError("Invalid bool operand during lazy load");
+         if (!readU8(buffer, offset, value)) return setError("Invalid bool operand during lazy load");
          operand.boolValue = value != 0;
          break;
        }
        case OperandType::String:
-         if (!readString(fileData, offset, operand.stringValue)) return setError("Invalid string operand during lazy load");
+         if (!readString(buffer, offset, operand.stringValue)) return setError("Invalid string operand during lazy load");
          break;
        case OperandType::Float:
-         if (!readF32(fileData, offset, operand.floatValue)) return setError("Invalid float operand during lazy load");
+         if (!readF32(buffer, offset, operand.floatValue)) return setError("Invalid float operand during lazy load");
          break;
        default:
          return setError("Unknown operand type during lazy load");
@@ -647,12 +664,12 @@ bool YsaRuntime::readString(const std::vector<uint8_t>& data, size_t& offset, st
   return true;
 }
 
-bool YsaRuntime::loadFromBuffer(const std::vector<uint8_t>& data) {
+bool YsaRuntime::buildNodeIndex(const std::vector<uint8_t>& headerData) {
   size_t offset = 0;
-  if (data.size() < 8) {
+  if (headerData.size() < 8) {
     return setError("Story too small");
   }
-  if (!(data[0] == 'Y' && data[1] == 'S' && data[2] == 'A' && data[3] == '1')) {
+  if (!(headerData[0] == 'Y' && headerData[1] == 'S' && headerData[2] == 'A' && headerData[3] == '1')) {
     return setError("Invalid YSA magic");
   }
   offset = 4;
@@ -660,43 +677,36 @@ bool YsaRuntime::loadFromBuffer(const std::vector<uint8_t>& data) {
   uint16_t nodeCount = 0;
   uint16_t initialValueCount = 0;
   uint32_t lineCount = 0;
-  if (!readU16(data, offset, version) || !readU16(data, offset, nodeCount) || !readU32(data, offset, lineCount)) {
+  if (!readU16(headerData, offset, version) || !readU16(headerData, offset, nodeCount) || !readU32(headerData, offset, lineCount)) {
     return setError("Invalid header");
   }
   if (version == 2) {
-    if (!readU16(data, offset, initialValueCount)) {
+    if (!readU16(headerData, offset, initialValueCount)) {
       return setError("Invalid initial value header");
     }
   } else if (version != 1) {
     return setError("Unsupported YSA version");
   }
 
-  nodes.clear();
-  nodeIndex.clear();
-  lineTable.clear();
-  initialValues.clear();
-  fileData = data;  // Keep entire file for on-demand parsing
-
-  // Build index of all nodes WITHOUT parsing them
+  // Build index: store offset of first instruction for each node
   for (uint16_t i = 0; i < nodeCount; ++i) {
     std::string nodeName;
     uint16_t instructionCount = 0;
-    const size_t nodeStartOffset = offset;
     
-    if (!readString(data, offset, nodeName) || !readU16(data, offset, instructionCount)) {
+    if (!readString(headerData, offset, nodeName) || !readU16(headerData, offset, instructionCount)) {
       return setError("Invalid node header");
     }
 
-    // Record index: will parse on-demand
+    // Record where instructions START (after name + instructionCount)
     NodeIndex idx;
-    idx.fileOffset = nodeStartOffset;
+    idx.fileOffset = offset;  // This is the offset of the FIRST instruction
     idx.instructionCount = instructionCount;
     nodeIndex[nodeName] = idx;
 
-    // Skip past instructions without parsing them
+    // Skip past instructions without parsing
     for (uint16_t j = 0; j < instructionCount; ++j) {
       uint16_t instructionSize = 0;
-      if (!readU16(data, offset, instructionSize) || offset + instructionSize > data.size()) {
+      if (!readU16(headerData, offset, instructionSize) || offset + instructionSize > headerData.size()) {
         return setError("Invalid instruction size");
       }
       offset += instructionSize;
@@ -707,7 +717,7 @@ bool YsaRuntime::loadFromBuffer(const std::vector<uint8_t>& data) {
   for (uint32_t i = 0; i < lineCount; ++i) {
     std::string lineId;
     std::string text;
-    if (!readString(data, offset, lineId) || !readString(data, offset, text)) {
+    if (!readString(headerData, offset, lineId) || !readString(headerData, offset, text)) {
       return setError("Invalid line table");
     }
     lineTable[lineId] = text;
@@ -717,7 +727,7 @@ bool YsaRuntime::loadFromBuffer(const std::vector<uint8_t>& data) {
   for (uint16_t i = 0; i < initialValueCount; ++i) {
     std::string varName;
     uint8_t valueType = 0;
-    if (!readString(data, offset, varName) || !readU8(data, offset, valueType)) {
+    if (!readString(headerData, offset, varName) || !readU8(headerData, offset, valueType)) {
       return setError("Invalid initial value");
     }
 
@@ -725,31 +735,28 @@ bool YsaRuntime::loadFromBuffer(const std::vector<uint8_t>& data) {
     switch (valueType) {
       case 0: {
         float f = 0;
-        if (!readF32(data, offset, f)) return setError("Invalid float initial value");
+        if (!readF32(headerData, offset, f)) return setError("Invalid float initial value");
         value = Value::fromFloat(f);
         break;
       }
       case 1: {
         uint8_t b = 0;
-        if (!readU8(data, offset, b)) return setError("Invalid bool initial value");
+        if (!readU8(headerData, offset, b)) return setError("Invalid bool initial value");
         value = Value::fromBool(b != 0);
         break;
       }
       case 2: {
         std::string s;
-        if (!readString(data, offset, s)) return setError("Invalid string initial value");
+        if (!readString(headerData, offset, s)) return setError("Invalid string initial value");
         value = Value::fromString(s);
         break;
       }
       default:
-        return setError("Unknown initial value type");
+        return setError("Invalid initial value type");
     }
     initialValues[varName] = std::move(value);
   }
 
-  if (offset != data.size()) {
-    return setError("Trailing data in story");
-  }
   return true;
 }
 

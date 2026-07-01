@@ -82,9 +82,16 @@ struct YsaNode {
     std::vector<YsaInstruction> instructions;
 };
 
+struct NodeIndex {
+    size_t fileOffset = 0;
+    uint16_t instructionCount = 0;
+};
+
 struct YsaProgram {
     uint16_t version = 0;
-    std::map<std::string, YsaNode> nodes;
+    std::string filePath;  // Store path for lazy loading
+    std::map<std::string, NodeIndex> nodeIndex;  // Map node name to file offset
+    std::map<std::string, YsaNode> nodes;  // Lazy-loaded cache
     std::map<std::string, std::string> lineTable;
     std::map<std::string, Value> initialValues;
 };
@@ -239,43 +246,31 @@ bool LoadYsaProgramFromFile(const std::filesystem::path& path, YsaProgram& progr
     }
 
     program.version = version;
-    program.nodes.clear(); program.lineTable.clear(); program.initialValues.clear();
+    program.filePath = path.string();  // Store path for lazy loading
+    program.nodes.clear(); program.nodeIndex.clear(); program.lineTable.clear(); program.initialValues.clear();
 
+    // Build index without parsing nodes
     for (uint16_t ni = 0; ni < nodeCount; ++ni) {
-        YsaNode node;
-        if (!ReadString(data, off, node.name)) { std::cerr << "Failed to read node name\n"; return false; }
+        std::string nodeName;
         uint16_t instrCount = 0;
-        if (!ReadU16(data, off, instrCount)) { std::cerr << "Failed to read instruction count\n"; return false; }
-        node.instructions.reserve(instrCount);
+        if (!ReadString(data, off, nodeName) || !ReadU16(data, off, instrCount)) {
+            std::cerr << "Failed to read node header\n"; return false;
+        }
+
+        // Record where instructions start (for lazy loading)
+        NodeIndex idx;
+        idx.fileOffset = off;
+        idx.instructionCount = instrCount;
+        program.nodeIndex[nodeName] = idx;
+
+        // Skip past instructions without parsing
         for (uint16_t ii = 0; ii < instrCount; ++ii) {
             uint16_t instrSize = 0;
             if (!ReadU16(data, off, instrSize) || off + instrSize > data.size()) {
-                std::cerr << "Bad instruction in node " << node.name << "\n"; return false;
+                std::cerr << "Bad instruction size in node " << nodeName << "\n"; return false;
             }
-            const size_t instrEnd = off + instrSize;
-            YsaInstruction instr;
-            uint8_t opCount = 0;
-            if (!ReadU8(data, off, instr.opcode) || !ReadU8(data, off, opCount)) {
-                std::cerr << "Failed to read instruction header\n"; return false;
-            }
-            instr.operands.reserve(opCount);
-            for (uint8_t oi = 0; oi < opCount; ++oi) {
-                uint8_t typeRaw = 0;
-                if (!ReadU8(data, off, typeRaw)) { std::cerr << "Failed to read operand type\n"; return false; }
-                YsaOperand op; op.type = static_cast<YsaOperandType>(typeRaw);
-                switch (op.type) {
-                    case YsaOperandType::U16:    if (!ReadU16(data, off, op.u16Value))   { std::cerr << "Bad u16 operand\n"; return false; } break;
-                    case YsaOperandType::Bool:   { uint8_t b=0; if (!ReadU8(data, off, b)) { std::cerr << "Bad bool operand\n"; return false; } op.boolValue = b!=0; break; }
-                    case YsaOperandType::String: if (!ReadString(data, off, op.stringValue)) { std::cerr << "Bad string operand\n"; return false; } break;
-                    case YsaOperandType::Float:  if (!ReadF32(data, off, op.floatValue)) { std::cerr << "Bad float operand\n"; return false; } break;
-                    default: std::cerr << "Unknown operand type " << (int)typeRaw << "\n"; return false;
-                }
-                instr.operands.push_back(std::move(op));
-            }
-            if (off != instrEnd) { std::cerr << "Instruction size mismatch in node " << node.name << "\n"; return false; }
-            node.instructions.push_back(std::move(instr));
+            off += instrSize;
         }
-        program.nodes[node.name] = std::move(node);
     }
 
     for (uint32_t li = 0; li < lineCount; ++li) {
@@ -298,7 +293,7 @@ bool LoadYsaProgramFromFile(const std::filesystem::path& path, YsaProgram& progr
     }
 
     if (off != data.size()) { std::cerr << "Trailing bytes in YSA (" << (data.size()-off) << " extra)\n"; return false; }
-    std::cout << "Parsed YSA v" << version << ": " << program.nodes.size() << " nodes, "
+    std::cout << "Loaded YSA v" << version << " (lazy loading): " << program.nodeIndex.size() << " nodes indexed, "
               << program.lineTable.size() << " lines, " << program.initialValues.size() << " initial values\n";
     return true;
 }
@@ -485,9 +480,75 @@ std::vector<Value> PopSubstitutions(std::vector<Value>& stack, int count) {
 
 // ── YSA executor ──────────────────────────────────────────────────────────────
 
-bool ExecuteNodeYsa(const YsaProgram& program, const std::string& nodeName, bool interactive, RuntimeState& state);
+// Load a single node from file on-demand (lazy loading)
+bool EnsureNodeLoaded(YsaProgram& program, const std::string& nodeName) {
+    // Check if already cached
+    if (program.nodes.find(nodeName) != program.nodes.end()) {
+        return true;
+    }
+    
+    // Check if in index
+    auto indexIt = program.nodeIndex.find(nodeName);
+    if (indexIt == program.nodeIndex.end()) {
+        std::cerr << "Node not in index: " << nodeName << "\n";
+        return false;
+    }
+    
+    // Read file and parse this node on-demand
+    std::ifstream file(program.filePath, std::ios::binary);
+    if (!file.is_open()) {
+        std::cerr << "Failed to reopen file: " << program.filePath << "\n";
+        return false;
+    }
+    
+    // Read entire file (on disk this would be lazy, but for harness we load all at once)
+    std::vector<uint8_t> data((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    
+    const NodeIndex& idx = indexIt->second;
+    size_t off = idx.fileOffset;
+    
+    // Parse this single node
+    YsaNode node;
+    node.instructions.reserve(idx.instructionCount);
+    
+    for (uint16_t ii = 0; ii < idx.instructionCount; ++ii) {
+        uint16_t instrSize = 0;
+        if (!ReadU16(data, off, instrSize) || off + instrSize > data.size()) {
+            std::cerr << "Bad instruction size\n"; return false;
+        }
+        const size_t instrEnd = off + instrSize;
+        YsaInstruction instr;
+        uint8_t opCount = 0;
+        if (!ReadU8(data, off, instr.opcode) || !ReadU8(data, off, opCount)) {
+            std::cerr << "Failed to read instruction header\n"; return false;
+        }
+        instr.operands.reserve(opCount);
+        for (uint8_t oi = 0; oi < opCount; ++oi) {
+            uint8_t typeRaw = 0;
+            if (!ReadU8(data, off, typeRaw)) { std::cerr << "Failed to read operand type\n"; return false; }
+            YsaOperand op; op.type = static_cast<YsaOperandType>(typeRaw);
+            switch (op.type) {
+                case YsaOperandType::U16:    if (!ReadU16(data, off, op.u16Value))   { std::cerr << "Bad u16 operand\n"; return false; } break;
+                case YsaOperandType::Bool:   { uint8_t b=0; if (!ReadU8(data, off, b)) { std::cerr << "Bad bool operand\n"; return false; } op.boolValue = b!=0; break; }
+                case YsaOperandType::String: if (!ReadString(data, off, op.stringValue)) { std::cerr << "Bad string operand\n"; return false; } break;
+                case YsaOperandType::Float:  if (!ReadF32(data, off, op.floatValue)) { std::cerr << "Bad float operand\n"; return false; } break;
+                default: std::cerr << "Unknown operand type " << (int)typeRaw << "\n"; return false;
+            }
+            instr.operands.push_back(std::move(op));
+        }
+        if (off != instrEnd) { std::cerr << "Instruction size mismatch\n"; return false; }
+        node.instructions.push_back(std::move(instr));
+    }
+    
+    program.nodes[nodeName] = std::move(node);
+    return true;
+}
 
-bool ExecuteNodeYsa(const YsaProgram& program, const std::string& nodeName, bool interactive, RuntimeState& state) {
+bool ExecuteNodeYsa(YsaProgram& program, const std::string& nodeName, bool interactive, RuntimeState& state);
+
+bool ExecuteNodeYsa(YsaProgram& program, const std::string& nodeName, bool interactive, RuntimeState& state) {
+    if (!EnsureNodeLoaded(program, nodeName)) return false;
+    
     auto it = program.nodes.find(nodeName);
     if (it == program.nodes.end()) { std::cerr << "Node not found: " << nodeName << "\n"; return false; }
 

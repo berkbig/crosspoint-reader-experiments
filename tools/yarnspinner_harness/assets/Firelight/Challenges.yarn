@@ -1,0 +1,308 @@
+title: Challenge_Initialisation
+---
+<<declare $Log=false>>
+<<declare $Log_Bonus=0>>
+<<declare $Wade_Bonus=0>>
+<<declare $Rope_Bonus=0>>
+<<declare $Wade_Fail=random()>0.3+$Wade_Bonus>>
+<<declare $Rope_Fail=random()>0.5+$Rope_Bonus>>
+===
+
+title: Clear_Bonuses
+---
+<<set $Log=false>>
+<<set $Log_Bonus=0>>
+<<set $Wade_Bonus=0>>
+<<set $Rope_Bonus=0>>
+===
+
+title: Challenge
+when: always
+---
+The path ahead of you collapses into a muddy bog. The stench of rotting vegetation hits you in the back of your throat.
+->Carry onwards through the bog
+    <<detour Challenge_Mud>>
+    <<set $Adventure_Progress=$Adventure_Progress+1>>
+->Change direction
+    <<set $Adventure_Progress=$Adventure_Progress-1>>
+===
+title: Challenge
+when: always
+position: 649,408
+---
+<<detour  Clear_Bonuses>>
+You come to a river. The path continues on the far bank
+<<detour  River_Flavour>>
+<<detour  RiverCrossing>>
+<<set $Adventure_Progress=$Adventure_Progress+1>>
+===
+title: Challenge
+when: always
+position: 649,408
+---
+You reach the top of a tall cliff. Your path seems to continue below.
+-> Use Rope To Climb Down
+    <<detour  Cliff_Rope>>
+    <<set $Adventure_Progress=$Adventure_Progress+1>>
+-> Try to go Around
+    <<set $Adventure_Progress=$Adventure_Progress-1>>
+===
+title: Challenge
+when: always
+---
+<<detour RopeBridge>>
+===
+
+
+title: RopeBridge
+when: always
+---
+You come to a rickety bridge
+<<detour BridgeFlavour>>
+->Cross carefully
+    <<detour CrossRopeBridge>>
+->Find another way
+    <<return>>
+===
+
+title: BridgeFlavour
+when: always
+---
+=> It spans a wide rocky crevasse, which drops away into darkness below
+=> Connecting the trunks of two huge trees 
+=> A fast flowing river passes several meters below
+=> Lashed loosely betweeen the trunks of 2 small trees it crosses a deep ravine
+===
+
+title: CrossRopeBridge
+when: $Random_Chance_Unlikely==true
+---
+The creaking of boards and ropes intensifies as you cross. The board beneath your feet gives way suddenly and you miss your catch on the side ropes tumbling floorwards like a large squealing rock.
+<<jump End>> 
+===
+title: CrossRopeBridge
+when: always
+---
+Picking your way carefully across the rotting boards you reach the other side unscathed
+===
+title: CrossRopeBridge
+when: always
+---
+The bridge turns out to be better built than it looks and you cross without incident
+===
+title: CrossRopeBridge
+when: $Random_Chance_Balanced==true
+---
+As you take your first few steps it becomes clear that the bridge has rotted beyond reasonable utility. Leaping backwards you scramble to safety and reconsider your direction.
+===
+
+
+
+title: RiverCrossing
+when: always
+position: 149,-413
+---
+->Walk across log <<if $Log==true>>
+    <<detour CrossRiver_Tree>>
+->Wade across river
+    <<detour CrossRiver_Wade>>
+->Use your rope to swing across <<if $HasRope==true>>
+    <<detour CrossRiver_Swing>>
+<<jump Jungle_Main>>
+===
+title: RiverCrossing
+when: $Log==false
+position: 178,-267
+---
+There is no obvious way to cross. 
+->Wade across river
+    You set out to wade across the water
+    <<detour CrossRiver_Wade>>
+    <<jump Jungle_Main>>
+->Use your rope to swing across <<if $HasRope==true>>
+    <<detour CrossRiver_Swing>>
+    <<jump Jungle_Main>>
+===
+
+
+title: River_Flavour
+when: always
+---
+A slightly rotten log has fallen across the river at it's thinnest point.
+<<set $Log=true>>
+<<set $Log_Bonus=-0.1>>
+===
+title: River_Flavour
+when: always
+---
+A wide log spans the river here, flattened at the top by many years of use
+<<set $Log=true>>
+<<set $Log_Bonus=0.3>>
+===
+title: River_Flavour
+when: always
+---
+A thin branch precariously crosses the river here 
+<<set $Log=true>>
+<<set $Log_Bonus=0.3>>
+===
+title: River_Flavour
+when: always
+---
+=>The river is relatively shallow at this point
+=>There is an island in the middle of the river here
+<<set $Wade_Bonus=0.5>>
+===
+title: River_Flavour
+when: always
+---
+The remains of a crossing are scattered across the river here.
+<<set $Wade_Bonus=0.1>>
+===
+title: River_Flavour
+when: always
+---
+The river thunders through a tight ravine, white water splashing around the rocks
+<<set $Wade_Bonus=-0.5>>
+===
+title: River_Flavour
+when: always
+---
+Large branches reach out over the river above
+<<set $Rope_Bonus=0.5>>
+===
+title: River_Flavour
+when: always
+---
+=> The jungle retreats here leaving a gap in the trees either side of the crossing
+=> Slick rock reaches down to the edge of the river on the other side
+<<set $Rope_Bonus=-0.5>>
+===
+
+title: Challenge_Mud
+when: always
+---
+You wade slowly through the reeking mud, emerging at the other side tired but unscathed
+=== 
+title: Challenge_Mud
+when: always
+---
+Panicking as the mud start to come over your knees, you thrash wildly - making the problem worse. 
+<<if $HasRope>>
+-> Use rope 
+    Throwing your rope around a nearby tree you pull yourself to safety
+    <<jump Jungle_Main>>
+<<else>>
+    You fall slowly into the enveloping darkness, your last breath choked with reeking mud as you disappear.
+    <<jump End>>
+<<endif>>
+=== 
+title: Challenge_Mud
+when: $HasRope
+---
+Picking your way around the edge of the bog you emerge unscathed the other side. 
+===
+
+title: CrossRiver_Wade
+when: $Wade_Fail==true
+position: 683,159
+---
+The current is too strong and your legs are swept from under you. 
+The last thing you see is the water closing over you as you are dragged to your death
+<<jump End>>
+===
+title: CrossRiver_Wade
+when: $Wade_Fail==true
+position: 519,-73
+---
+The current is too strong and your legs are swept from under you. Your head goes under and you black out.
+You awake bruised on the bank far from where you started. Your backpack and items are gone
+<<detour EmptyInventory>>
+===
+title: CrossRiver_Wade
+when: always
+position: 639,-191
+---
+You struggle your way across the river, grabbing at dangling vines to steady yourself. 
+You emerge tired and wet on the other bank
+===
+
+title: CrossRiver_Swing
+when: always
+---
+You hook a big branch hanging over the river with your rope and swing, whooping across to the other side. You hope someone was watching that.
+===
+title: CrossRiver_Swing
+when: always
+---
+Your rope tangles in a clump of vines far above. Swinging is difficult from such a loose mooring but you make it across intact.
+===
+title: CrossRiver_Swing
+when: always
+---
+You miss the tree but land your hook in the soil on the far bank. Dragging yourself through the torrent is wet and miserable but you reach the other side unharmed.
+===
+title: CrossRiver_Swing
+when: $Rope_Fail==true
+---
+Your throw fails completely and you stumble into the water. No choice but to wade now
+<<detour CrossRiver_Wade>>
+===
+
+title: CrossRiver_Tree
+when: always
+position: 207,289
+---
+Years of gymnastics as a teenager prepared you perfectly for this moment. You grin widely as you cross the log in style
+===
+title: CrossRiver_Tree
+when: always
+position: -19,232
+---
+Carefully inching your way across the log one tentative step at a time you reach the other bank.
+===
+title: CrossRiver_Tree
+when: always
+position: 178,352
+---
+Sliding in all directions and more often than not on your knees you eventually cross the log and achieve the far bank.
+===
+title: CrossRiver_Tree
+when: always
+position: -41,356
+---
+The log Snaps and crashes into the river below. You have no choice but to attempt to wade the rest of the way
+<<detour CrossRiver_Wade>>
+===
+
+title: Cliff_Fall
+when: $HasRope
+position: 168,620
+---
+Instinct kicks in and you throw out your rope searching for something to catch you. It tangles around an exposed root and you bounce clumsily down the cliff to the floor below.
+===
+title: Cliff_Fall
+when: always
+position: 168,620
+---
+Scrabbling wildly you manage to catch an overhanging root. You pull yourself to safety and head back into the jungle
+===
+title: Cliff_Fall
+when: always
+position: 168,620
+---
+Your neck snaps with a crunch as you hit the floor below
+<<jump End>>
+===
+
+title: Cliff_Rope
+when: always
+---
+You attach your rope firmly to a nearby tree and climb down safely
+===
+title: Cliff_Rope
+when: $Random_Chance_Unlikely==true
+---
+Your rope slips from it's attachment and you fall. The ground is... Hard
+<<jump End>>
+===

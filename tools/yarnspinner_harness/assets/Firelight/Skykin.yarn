@@ -1,0 +1,135 @@
+title: Skykin_Initialisation
+position: -696,-103
+---
+<<declare $Skykin_Foreshadowing_Level=0>>
+<<declare $HasEyeOfJungle=false>>
+<<declare $Skykin_Meeting_Count=0>>
+===
+
+title: Test_Skykin_Chapter
+---
+<<detour Skykin_Chapter>>
+<<jump Test_Skykin_Chapter>>
+===
+
+
+title: Skykin_Chapter
+position: -559,203
+---
+<<if $HasEyeOfJungle>> 
+    <<detour Skykin_Meetings>>
+<<else>>
+    <<if $Skykin_Foreshadowing_Level<5>>
+        <<detour Skykin_Foreshadowing>>
+        <<set $Skykin_Foreshadowing_Level=$Skykin_Foreshadowing_Level+1>>
+    <<else>>
+        <<detour EyeOfJungle_Temple>>
+    <<endif>>
+<<endif>>
+===
+
+title: Skykin_Foreshadowing
+when: always
+position: 21,-416
+---
+A Strange monolith rises from the jungle to your right
+===
+title: Skykin_Foreshadowing
+when: always
+color: blue
+position: -280,-421
+---
+A large statue appears next to the path ahead. It has a strangely birdlike appearance, and you cant shake the feeling that the gem eyes watch you as you pass.
+===
+title: Skykin_Foreshadowing
+when: always
+position: 23,-267
+---
+You pass a large stone ruin. It has clearly been abandoned for many years - the jungle reclaiming most of it in a tangle of vines and roots.
+===
+title: Skykin_Foreshadowing
+when: always
+position: -275,-249
+---
+Crude figures are carved into the cliff wall next to you. Spindly humanoid figures and giant birds are both represented equally.
+===
+
+
+
+title: Skykin_Meetings
+when: always
+position: -199,348
+---
+There trees around you seem busy with avian life. Birds of all sizes, colours and shapes crowd branches.
+You feel the noise should be overwhelming, but they are eerily silent and attentive.
+===
+title: Skykin_Meetings
+when: always
+position: -202,167
+---
+You find another of the large bird statues that are scattered throughout the jungle. It's eyes flash yellow as you pass.
+===
+title: Skykin_Meetings
+when: always
+position: 39,344
+---
+A large tower is visible through a gap in the trees. Birds circle the top of the tower in a dazzling spiral of colour.
+===
+title: Skykin_Meetings
+when: always
+position: 17,173
+---
+A large green parrot lands on the rock in front of you. It fixes you with a glare, and starts to sing a complex song. 
+You understand none of it but feel no welcome in it's performance.
+===
+title: Skykin_Meetings
+when: always
+position: 258,159
+---
+A door swings open in the tree in front of you. The sound of flapping wings disappears into the jungle to your left and a single green feather is left on the ground in front of it
+->Enter doorway
+    You find a small hollow in the tree. YOu search it and find
+    <<detour Skykin_Treasures>>
+->Carry on 
+    <<return>>
+===
+
+
+title: EyeOfJungle_Temple
+position: -228,-39
+---
+A giant temple rises from the Jungle in front of you. 
+=>Attaching your rope to the giant front doors you slowly drag them open far enough to slip inside<<if $HasRope>>
+=>You discover a hole in the wall which lets you into the main chamber.
+<<if $HasTorch>>
+    <<if not $IsTorchLit>>
+        You light your torch from a small fire just inside the temple
+    <<endif>>
+    Navigating the dark temple by the glow of your small torch, you eventually reach the center of the ruin
+    Displayed on a large altar here is the largest Emerald you have ever seen. You grab it quickly and exit the temple.
+    <<set $HasEyeOfJungle=true >>
+<<else>>
+    The temple is too dark inside for you to explore further
+<<endif>>
+You return to the library to regroup and plan your next adventures.
+
+<<jump Library>>
+===
+
+title: Skykin_Treasures
+position: 702,324
+---
+<<if $Random_Chance_Unlikely==true>>
+    You clip a grappling rope to your belt
+    <<set $HasRope=true>>
+<<elseif $Random_Chance_Unlikely==true>>
+    A half full flask of clear water is added to your backpack
+    <<set $HasFlask=true>>
+<<elseif $Random_Chance_Unlikely==true>>
+    You find an unlit torch
+    <<set $HasTorch=true>>
+<<else>>
+    You add a small pile of gold coins to your treasure pile
+    <<set $Treasure=$Treasure+random_range(50,100)>>
+<<endif>>
+===

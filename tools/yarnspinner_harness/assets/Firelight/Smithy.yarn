@@ -1,0 +1,94 @@
+title: Smithy_Initialisation
+when: always
+---
+<<declare $Smithy_Discovery_Probability =0.0>>
+<<declare $Smithy_Met=false>>
+<<declare $Smithy_Ally=false>>
+<<declare $Smithy_Reputation=0.5>>
+<<declare $Smithy_Name="???">>
+<<declare $Log_Count=0>>
+<<declare $Find_Smithy=random() < $Smithy_Discovery_Probability>>
+===
+
+title: Test_Smithy_Chapter
+---
+<<detour Debug_Fill_Inventory>>
+<<detour Smithy_Chapter>>
+<<jump Test_Smithy_Chapter>>
+===
+
+title: Smithy_Chapter
+---
+<<if $Smithy_Met==false>>
+<<detour Smithy_Foreshadowing>>
+<<if $Find_Smithy>>
+    <<detour Smithy_First_Meeting>>
+<<endif>>
+<<else>>
+<<if $Smithy_Ally==true>>
+    <<detour Smithy_Barks>>
+<<else>>
+    <<detour Meet_Smithy>>
+<<endif>>
+<<endif>>
+===
+
+title: Smithy_Foreshadowing
+when: always
+---
+=> A strange mournful song drifts through the trees ahead <<once>>
+=> A scatter of coals lies across the path in front of you  <<once>>
+=> You hear a thin whistle, like a steam engine powering down, coming from the trees ahead    <<once>>
+=> Strange metallic sobs echo through the jungle
+=> Slow Clanking echoes through the jungle
+=> A low hum intrudes at the edge of your hearing 
+<<set $Smithy_Discovery_Probability = $Smithy_Discovery_Probability + 0.05>>
+===
+
+title: Smithy_First_Meeting
+---
+Mournful whistling and a slow clanking noise can be heard on the path ahead. 
+Collapsed in the bushes you are surprised to see a huge metal man. 
+Half woodstove, half medieval knight, he is sobbing uncontrollably and does not notice your approach.
+You hear him whispering repeatedly to him self "No flame, no hope, no home".
+<<detour Meet_Smithy>>
+===
+
+title: Meet_Smithy
+---
+<<set $Smithy_Met=true>>
+-> Introduce yourself
+    The strange metal man lifts his head fractionally to look in your direction with a deep sigh. "Sir Archibald FlameRoarer Smith at your service" he whispers weakly.
+    "I am lost without my flame Traveller, and cannot help you now" he finishes, turning his face away as he curls back into a sad metal ball.
+    <<set $Smithy_Reputation=$Smithy_Reputation+0.1>>
+    <<detour Meet_Smithy>>
+-> Throw a rock
+    The metallic man curls himself even more tightly into a ball. A small shriek is followed by continued sobbing.
+    <<set $Smithy_Reputation=$Smithy_Reputation-0.2>>
+-> Offer Lit torch <<if $HasTorch and $IsTorchLit>>
+    The metal man initially appears shocked at the torch in front of him but then grabs it more quickly than you can react, and thrusts it into the open cavity in his belly.
+    A flame kindles in his belly, reflecting warmly in his now alert eyes.
+    "If you allow it, I would travel with you for a while" the metal man says. 
+    "With my fire kindled I can offer some protection from the local ruffians, and perhaps be of service as blacksmith"
+    ->Agree 
+        <<set $Smithy_Ally=true>>
+        "Splendid" remarks the metal man. "Please call me Smithy for all my friends do"
+        You carry on through the jungle with Smithy clanking companionably at your side. He hums almost continuously in a deep cheerful baritone.
+    ->Decline
+        "Another day then traveller" says the metal man whistfully as he clanks off into the jungle.
+    <<set $Smithy_Reputation=$Smithy_Reputation+0.5>>
+-> Sneak away
+    <<return>>
+
+===
+
+title: Smithy_Barks
+---
+=> Smithy hums a cheerful tune under his breath, accompanied by the rhythmic clanking onhis metal largest
+=> "In the old days there would be hundreds of us" Smithy shares. "Gleaming ranks of Potbelly knights as afar as the eye can see" <<once>>
+=> Wildlife flees the path into the cover of the jungle as Smithy crashes through.
+=> Smithy seems on edge - every cracking twig prompting a reaction from the big metal knight. 
+=> "DId I ever tell you about the great siege of the western Reaches" asks Smithy. "A bare hundred of us held against a host of thousands that day" <<once>>
+=> Smithy leaps into the undergrowth, wavig a branch ahead of him like a sword. Birds scatter in all directions, but nothing more appears
+    "Come out and face me cowards" he shouts to the now empty clearing in front of him
+===
