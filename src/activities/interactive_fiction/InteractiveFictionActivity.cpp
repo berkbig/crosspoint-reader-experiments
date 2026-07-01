@@ -14,8 +14,9 @@
 namespace {
 constexpr const char* kStoryDir = "/interactive_fiction";
 constexpr int kContentPadding = 8;
-constexpr int kLineHeight = 20;
 constexpr int kHeaderSpacing = 6;
+constexpr int kLineSpacing = 2;
+constexpr int kWrapMaxLinesPerInputLine = 64;
 }  // namespace
 
 InteractiveFictionActivity::~InteractiveFictionActivity() = default;
@@ -124,7 +125,7 @@ void InteractiveFictionActivity::onSelectPressed() {
   if (runtime->isWaitingForChoice()) {
     if (runtime->chooseSelectedOption()) {
       updateWrappedLines();
-      scrollToBottom();
+      scrollOffset = 0;
       requestUpdate();
     }
     return;
@@ -196,6 +197,13 @@ void InteractiveFictionActivity::onScrollDown() {
   }
 
   if (runtime->isWaitingForChoice()) {
+    updateWrappedLines();
+    const int maxScroll = std::max(0, totalWrappedLines - maxVisibleLines);
+    if (scrollOffset < maxScroll) {
+      scrollOffset++;
+      requestUpdate();
+      return;
+    }
     if (runtime->moveSelection(1)) {
       updateWrappedLines();
       requestUpdate();
@@ -214,22 +222,50 @@ int InteractiveFictionActivity::getVisibleLineCount() const {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int contentTop = metrics.headerHeight + metrics.topPadding + kHeaderSpacing;
   const int contentBottom = renderer.getScreenHeight() - (metrics.buttonHintsHeight + kContentPadding);
-  const int contentHeight = std::max(kLineHeight, contentBottom - contentTop);
-  return std::max(1, contentHeight / kLineHeight);
+  const int lineHeight = getLineHeightPx();
+  const int contentHeight = std::max(lineHeight, contentBottom - contentTop);
+  return std::max(1, contentHeight / lineHeight);
+}
+
+int InteractiveFictionActivity::getLineHeightPx() const {
+  return std::max(1, renderer.getLineHeight(kFontId) + kLineSpacing);
+}
+
+int InteractiveFictionActivity::getContentLeftPx() const {
+  int viewTop = 0;
+  int viewRight = 0;
+  int viewBottom = 0;
+  int viewLeft = 0;
+  renderer.getOrientedViewableTRBL(&viewTop, &viewRight, &viewBottom, &viewLeft);
+  (void)viewTop;
+  (void)viewBottom;
+  return std::max(kContentPadding, viewLeft + kContentPadding);
+}
+
+int InteractiveFictionActivity::getContentWidthPx() const {
+  int viewTop = 0;
+  int viewRight = 0;
+  int viewBottom = 0;
+  int viewLeft = 0;
+  renderer.getOrientedViewableTRBL(&viewTop, &viewRight, &viewBottom, &viewLeft);
+  (void)viewTop;
+  (void)viewBottom;
+  const int left = getContentLeftPx();
+  const int right = std::min(renderer.getScreenWidth() - kContentPadding, renderer.getScreenWidth() - viewRight - kContentPadding);
+  return std::max(20, right - left);
 }
 
 void InteractiveFictionActivity::updateWrappedLines() {
   visibleLines.clear();
   maxVisibleLines = getVisibleLineCount();
-
-  const int charsPerLine =
-      std::clamp((renderer.getScreenWidth() - (kContentPadding * 2)) / 10, 18, 42);
+  const int contentWidth = getContentWidthPx();
 
   if (selectingStory) {
     for (size_t i = 0; i < storyFiles.size(); ++i) {
       std::string optionLine = (i == selectedStoryIndex) ? "> " : "  ";
       optionLine += storyFiles[i];
-      visibleLines.push_back(std::move(optionLine));
+      const auto wrapped = renderer.wrappedText(kFontId, optionLine.c_str(), contentWidth, kWrapMaxLinesPerInputLine);
+      visibleLines.insert(visibleLines.end(), wrapped.begin(), wrapped.end());
     }
     totalWrappedLines = static_cast<int>(visibleLines.size());
     if (totalWrappedLines > maxVisibleLines) {
@@ -248,21 +284,21 @@ void InteractiveFictionActivity::updateWrappedLines() {
   }
 
   if (loadFailed || !runtime) {
-    auto wrapped = TextUtils::WrapText(tr(STR_NO_FILES_FOUND), charsPerLine);
-    visibleLines.insert(visibleLines.end(), wrapped.lines.begin(), wrapped.lines.end());
-    auto pathWrapped = TextUtils::WrapText(kStoryDir, charsPerLine);
-    visibleLines.insert(visibleLines.end(), pathWrapped.lines.begin(), pathWrapped.lines.end());
+    auto wrapped = renderer.wrappedText(kFontId, tr(STR_NO_FILES_FOUND), contentWidth, kWrapMaxLinesPerInputLine);
+    visibleLines.insert(visibleLines.end(), wrapped.begin(), wrapped.end());
+    auto pathWrapped = renderer.wrappedText(kFontId, kStoryDir, contentWidth, kWrapMaxLinesPerInputLine);
+    visibleLines.insert(visibleLines.end(), pathWrapped.begin(), pathWrapped.end());
     if (runtime && runtime->hasError()) {
-      auto errWrapped = TextUtils::WrapText(runtime->getError(), charsPerLine);
-      visibleLines.insert(visibleLines.end(), errWrapped.lines.begin(), errWrapped.lines.end());
+      auto errWrapped = renderer.wrappedText(kFontId, runtime->getError().c_str(), contentWidth, kWrapMaxLinesPerInputLine);
+      visibleLines.insert(visibleLines.end(), errWrapped.begin(), errWrapped.end());
     }
     totalWrappedLines = static_cast<int>(visibleLines.size());
     return;
   }
 
   for (const auto& line : runtime->getTranscript()) {
-    auto wrapped = TextUtils::WrapText(line, charsPerLine);
-    visibleLines.insert(visibleLines.end(), wrapped.lines.begin(), wrapped.lines.end());
+    auto wrapped = renderer.wrappedText(kFontId, line.c_str(), contentWidth, kWrapMaxLinesPerInputLine);
+    visibleLines.insert(visibleLines.end(), wrapped.begin(), wrapped.end());
   }
 
   if (runtime->isWaitingForChoice()) {
@@ -270,16 +306,22 @@ void InteractiveFictionActivity::updateWrappedLines() {
     for (const auto& option : runtime->getVisibleOptions()) {
       std::string optionLine = option.selected ? "> " : "  ";
       optionLine += option.text;
-      auto wrapped = TextUtils::WrapText(optionLine, charsPerLine);
-      visibleLines.insert(visibleLines.end(), wrapped.lines.begin(), wrapped.lines.end());
+      auto wrapped = renderer.wrappedText(kFontId, optionLine.c_str(), contentWidth, kWrapMaxLinesPerInputLine);
+      visibleLines.insert(visibleLines.end(), wrapped.begin(), wrapped.end());
     }
   } else if (runtime->isFinished()) {
     visibleLines.push_back("");
-    auto wrapped = TextUtils::WrapText(tr(STR_RETRY), charsPerLine);
-    visibleLines.insert(visibleLines.end(), wrapped.lines.begin(), wrapped.lines.end());
+    auto wrapped = renderer.wrappedText(kFontId, tr(STR_RETRY), contentWidth, kWrapMaxLinesPerInputLine);
+    visibleLines.insert(visibleLines.end(), wrapped.begin(), wrapped.end());
   }
 
   totalWrappedLines = static_cast<int>(visibleLines.size());
+  const int maxScroll = std::max(0, totalWrappedLines - maxVisibleLines);
+  if (runtime->isFinished()) {
+    scrollOffset = maxScroll;
+  } else {
+    scrollOffset = std::clamp(scrollOffset, 0, maxScroll);
+  }
 }
 
 void InteractiveFictionActivity::scrollToBottom() {
@@ -293,6 +335,8 @@ void InteractiveFictionActivity::render(RenderLock&&) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int pageWidth = renderer.getScreenWidth();
   const int contentTop = metrics.headerHeight + metrics.topPadding + kHeaderSpacing;
+  const int contentLeft = getContentLeftPx();
+  const int lineHeight = getLineHeightPx();
 
   const char* headerTitle = "Interactive Fiction";
   if (!selectingStory && !activeStoryPath.empty()) {
@@ -309,8 +353,8 @@ void InteractiveFictionActivity::render(RenderLock&&) {
 
   int y = contentTop;
   for (const auto& line : pageLines) {
-    renderer.drawText(kFontId, kContentPadding, y, line.c_str(), true);
-    y += kLineHeight;
+    renderer.drawText(kFontId, contentLeft, y, line.c_str(), true);
+    y += lineHeight;
   }
 
   const char* confirmLabel = "";
@@ -323,6 +367,11 @@ void InteractiveFictionActivity::render(RenderLock&&) {
   }
 
   const bool canScroll = selectingStory || totalWrappedLines > maxVisibleLines;
+  const bool showScrollPrompt = runtime && runtime->isWaitingForChoice() && scrollOffset < std::max(0, totalWrappedLines - maxVisibleLines);
+  if (showScrollPrompt) {
+    const int promptY = renderer.getScreenHeight() - metrics.buttonHintsHeight - renderer.getLineHeight(kFontId) - 2;
+    renderer.drawCenteredText(kFontId, promptY, tr(STR_SCROLL), true, EpdFontFamily::BOLD);
+  }
   const auto labels =
       mappedInput.mapLabels(tr(STR_BACK), confirmLabel, canScroll ? tr(STR_DIR_UP) : "", canScroll ? tr(STR_DIR_DOWN) : "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

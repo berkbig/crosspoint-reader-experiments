@@ -487,6 +487,16 @@ renderer.drawText(FONT_UI_MEDIUM, x, y, "Hello", true);
 
 ## Testing and Debugging
 
+### Interactive Fiction Runtime Workflow (MANDATORY)
+
+For **all Yarn Spinner / Interactive Fiction runtime fixes**, follow this order:
+
+1. Implement and test the fix in `tools/yarnspinner_harness` first.
+2. Keep harness and firmware runtime behavior in parity (same opcode semantics, saliency behavior, and condition evaluation rules).
+3. After harness validation, port the same fix to firmware (`src/activities/interactive_fiction/YsaRuntime.cpp`) and verify on device.
+
+Do not start with firmware-only debugging for IF runtime logic unless the issue is hardware-specific.
+
 ### Build Commands
 
 **Via CLI**:

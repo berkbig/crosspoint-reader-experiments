@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <random>
 #include <set>
@@ -92,6 +93,10 @@ struct YsaProgram {
     std::string filePath;  // Store path for lazy loading
     std::map<std::string, NodeIndex> nodeIndex;  // Map node name to file offset
     std::map<std::string, YsaNode> nodes;  // Lazy-loaded cache
+    std::map<std::string, uint32_t> nodeLastUseTick;
+    std::map<std::string, size_t> nodeEstimatedBytes;
+    size_t cachedNodeBytes = 0;
+    uint32_t nextNodeUseTick = 1;
     std::map<std::string, std::string> lineTable;
     std::map<std::string, Value> initialValues;
 };
@@ -121,13 +126,16 @@ constexpr uint8_t OP_PEEK_AND_RUN_NODE                = 20;
 constexpr uint8_t OP_ADD_SALIENCY_CANDIDATE           = 21;
 constexpr uint8_t OP_ADD_SALIENCY_CANDIDATE_FROM_NODE = 22;
 constexpr uint8_t OP_SELECT_SALIENCY_CANDIDATE        = 23;
+constexpr size_t MAX_YSA_CACHED_NODES                 = 32;
+constexpr size_t MAX_YSA_CACHED_NODE_BYTES            = 24 * 1024;
 
 // ── Runtime state ──────────────────────────────────────────────────────────────
 
 struct RuntimeState {
     std::map<std::string, Value> variables;
-    std::set<std::string> visitedNodes;
     std::map<std::string, int> visitCounts;
+    std::map<std::string, int> saliencySelectionCounts;
+    uint64_t runNodeSignal = 0;
     std::mt19937 rng{std::random_device{}()};
 };
 
@@ -247,19 +255,27 @@ bool LoadYsaProgramFromFile(const std::filesystem::path& path, YsaProgram& progr
 
     program.version = version;
     program.filePath = path.string();  // Store path for lazy loading
-    program.nodes.clear(); program.nodeIndex.clear(); program.lineTable.clear(); program.initialValues.clear();
+    program.nodes.clear();
+    program.nodeLastUseTick.clear();
+    program.nodeEstimatedBytes.clear();
+    program.cachedNodeBytes = 0;
+    program.nextNodeUseTick = 1;
+    program.nodeIndex.clear();
+    program.lineTable.clear();
+    program.initialValues.clear();
 
     // Build index without parsing nodes
     for (uint16_t ni = 0; ni < nodeCount; ++ni) {
+        const size_t nodeStart = off;
         std::string nodeName;
         uint16_t instrCount = 0;
         if (!ReadString(data, off, nodeName) || !ReadU16(data, off, instrCount)) {
             std::cerr << "Failed to read node header\n"; return false;
         }
 
-        // Record where instructions start (for lazy loading)
+        // Record where node header starts (for lazy loading + validation)
         NodeIndex idx;
-        idx.fileOffset = off;
+        idx.fileOffset = nodeStart;
         idx.instructionCount = instrCount;
         program.nodeIndex[nodeName] = idx;
 
@@ -383,8 +399,10 @@ Value CallFunction(const std::string& name, std::vector<Value> args, RuntimeStat
     if (name == "Not") return Value::fromBool(!args[0].asBool());
 
     // Yarn built-ins
-    if (name == "visited")
-        return Value::fromBool(state.visitedNodes.count(args[0].asString()) > 0);
+    if (name == "visited") {
+        auto it = state.visitCounts.find(args[0].asString());
+        return Value::fromBool(it != state.visitCounts.end() && it->second > 0);
+    }
     if (name == "visited_count") {
         auto it = state.visitCounts.find(args[0].asString());
         return Value::fromFloat(static_cast<float>(it != state.visitCounts.end() ? it->second : 0));
@@ -481,9 +499,63 @@ std::vector<Value> PopSubstitutions(std::vector<Value>& stack, int count) {
 // ── YSA executor ──────────────────────────────────────────────────────────────
 
 // Load a single node from file on-demand (lazy loading)
-bool EnsureNodeLoaded(YsaProgram& program, const std::string& nodeName) {
+void TouchCachedNode(YsaProgram& program, const std::string& nodeName) {
+    program.nodeLastUseTick[nodeName] = program.nextNodeUseTick++;
+}
+
+size_t EstimateYsaNodeBytes(const YsaNode& node) {
+    size_t total = sizeof(YsaNode);
+    total += node.instructions.capacity() * sizeof(YsaInstruction);
+    for (const YsaInstruction& ins : node.instructions) {
+        total += ins.operands.capacity() * sizeof(YsaOperand);
+        for (const YsaOperand& op : ins.operands) {
+            total += op.stringValue.capacity();
+        }
+    }
+    return total;
+}
+
+void TrimYsaNodeCache(YsaProgram& program, const std::set<std::string>& pinnedNodes, const std::string& justLoadedNode) {
+    if (program.nodes.size() <= MAX_YSA_CACHED_NODES && program.cachedNodeBytes <= MAX_YSA_CACHED_NODE_BYTES) return;
+
+    std::set<std::string> protectedNodes = pinnedNodes;
+    protectedNodes.insert(justLoadedNode);
+
+    while (program.nodes.size() > MAX_YSA_CACHED_NODES || program.cachedNodeBytes > MAX_YSA_CACHED_NODE_BYTES) {
+        auto evictIt = program.nodes.end();
+        uint32_t oldestTick = std::numeric_limits<uint32_t>::max();
+        for (auto it = program.nodes.begin(); it != program.nodes.end(); ++it) {
+            if (protectedNodes.count(it->first) > 0) continue;
+            const auto tickIt = program.nodeLastUseTick.find(it->first);
+            const uint32_t tick = tickIt != program.nodeLastUseTick.end() ? tickIt->second : 0;
+            if (tick < oldestTick) {
+                oldestTick = tick;
+                evictIt = it;
+            }
+        }
+        if (evictIt == program.nodes.end()) return;
+        const auto bytesIt = program.nodeEstimatedBytes.find(evictIt->first);
+        if (bytesIt != program.nodeEstimatedBytes.end()) {
+            if (program.cachedNodeBytes >= bytesIt->second) {
+                program.cachedNodeBytes -= bytesIt->second;
+            } else {
+                program.cachedNodeBytes = 0;
+            }
+            program.nodeEstimatedBytes.erase(bytesIt);
+        }
+        program.nodeLastUseTick.erase(evictIt->first);
+        program.nodes.erase(evictIt);
+    }
+}
+
+bool EnsureNodeLoaded(YsaProgram& program, const std::string& nodeName, const std::set<std::string>* pinnedNodes = nullptr) {
+    const std::set<std::string> emptyPinned;
+    const std::set<std::string>& pinned = pinnedNodes ? *pinnedNodes : emptyPinned;
+
     // Check if already cached
     if (program.nodes.find(nodeName) != program.nodes.end()) {
+        TouchCachedNode(program, nodeName);
+        TrimYsaNodeCache(program, pinned, nodeName);
         return true;
     }
     
@@ -506,12 +578,30 @@ bool EnsureNodeLoaded(YsaProgram& program, const std::string& nodeName) {
     
     const NodeIndex& idx = indexIt->second;
     size_t off = idx.fileOffset;
+
+    std::string parsedNodeName;
+    uint16_t instructionCount = 0;
+    if (!ReadString(data, off, parsedNodeName) || !ReadU16(data, off, instructionCount)) {
+        std::cerr << "Failed to read lazy node header for " << nodeName << "\n";
+        return false;
+    }
+    if (parsedNodeName != nodeName) {
+        std::cerr << "Lazy-load node mismatch: expected " << nodeName
+                  << ", got " << parsedNodeName << "\n";
+        return false;
+    }
+    if (instructionCount != idx.instructionCount) {
+        std::cerr << "Lazy-load instruction count mismatch for " << nodeName
+                  << " (index " << idx.instructionCount << ", file " << instructionCount << ")\n";
+        return false;
+    }
     
     // Parse this single node
     YsaNode node;
-    node.instructions.reserve(idx.instructionCount);
+    node.name = nodeName;
+    node.instructions.reserve(instructionCount);
     
-    for (uint16_t ii = 0; ii < idx.instructionCount; ++ii) {
+    for (uint16_t ii = 0; ii < instructionCount; ++ii) {
         uint16_t instrSize = 0;
         if (!ReadU16(data, off, instrSize) || off + instrSize > data.size()) {
             std::cerr << "Bad instruction size\n"; return false;
@@ -540,17 +630,126 @@ bool EnsureNodeLoaded(YsaProgram& program, const std::string& nodeName) {
         node.instructions.push_back(std::move(instr));
     }
     
+    const size_t estimatedBytes = EstimateYsaNodeBytes(node);
     program.nodes[nodeName] = std::move(node);
+    program.nodeEstimatedBytes[nodeName] = estimatedBytes;
+    program.cachedNodeBytes += estimatedBytes;
+    TouchCachedNode(program, nodeName);
+    TrimYsaNodeCache(program, pinned, nodeName);
     return true;
 }
 
-bool ExecuteNodeYsa(YsaProgram& program, const std::string& nodeName, bool interactive, RuntimeState& state);
+bool ExecuteNodeYsa(YsaProgram& program, const std::string& nodeName, bool interactive, RuntimeState& state,
+                    std::vector<std::string>* callStack = nullptr);
 
-bool ExecuteNodeYsa(YsaProgram& program, const std::string& nodeName, bool interactive, RuntimeState& state) {
-    if (!EnsureNodeLoaded(program, nodeName)) return false;
+bool EvaluateNodeConditionYsa(YsaProgram& program, const std::string& conditionNodeName, RuntimeState& state,
+                              std::vector<std::string>* callStack) {
+    std::set<std::string> pinnedNodes;
+    if (callStack) pinnedNodes.insert(callStack->begin(), callStack->end());
+    pinnedNodes.insert(conditionNodeName);
+    if (!EnsureNodeLoaded(program, conditionNodeName, &pinnedNodes)) return false;
+    auto it = program.nodes.find(conditionNodeName);
+    if (it == program.nodes.end()) return false;
+    TouchCachedNode(program, conditionNodeName);
+
+    const YsaNode& node = it->second;
+    std::vector<Value> stack;
+    int ip = 0;
+
+    auto requireOp = [&](const YsaInstruction& ins, size_t idx, YsaOperandType t) -> const YsaOperand* {
+        if (idx >= ins.operands.size() || ins.operands[idx].type != t) return nullptr;
+        return &ins.operands[idx];
+    };
+
+    while (ip >= 0 && ip < static_cast<int>(node.instructions.size())) {
+        const YsaInstruction& ins = node.instructions[static_cast<size_t>(ip)];
+        switch (ins.opcode) {
+            case OP_PUSH_STRING: {
+                const auto* op = requireOp(ins, 0, YsaOperandType::String);
+                if (!op) return false;
+                stack.push_back(Value::fromString(op->stringValue));
+                ++ip; break;
+            }
+            case OP_PUSH_FLOAT: {
+                const auto* op = requireOp(ins, 0, YsaOperandType::Float);
+                if (!op) return false;
+                stack.push_back(Value::fromFloat(op->floatValue));
+                ++ip; break;
+            }
+            case OP_PUSH_BOOL: {
+                const auto* op = requireOp(ins, 0, YsaOperandType::Bool);
+                if (!op) return false;
+                stack.push_back(Value::fromBool(op->boolValue));
+                ++ip; break;
+            }
+            case OP_PUSH_VARIABLE: {
+                const auto* op = requireOp(ins, 0, YsaOperandType::String);
+                if (!op) return false;
+                auto vit = state.variables.find(op->stringValue);
+                stack.push_back(vit != state.variables.end() ? vit->second : Value::fromFloat(0.0f));
+                ++ip; break;
+            }
+            case OP_CALL_FUNCTION: {
+                const auto* op = requireOp(ins, 0, YsaOperandType::String);
+                if (!op || stack.empty()) return false;
+                const int arity = static_cast<int>(stack.back().asFloat()); stack.pop_back();
+                if (arity < 0 || static_cast<int>(stack.size()) < arity) return false;
+                std::vector<Value> args;
+                for (int a = 0; a < arity; ++a) { args.push_back(stack.back()); stack.pop_back(); }
+                std::reverse(args.begin(), args.end());
+                std::string funcName = op->stringValue;
+                const auto dotPos = funcName.rfind('.');
+                if (dotPos != std::string::npos) funcName = funcName.substr(dotPos + 1);
+                stack.push_back(CallFunction(funcName, std::move(args), state));
+                ++ip; break;
+            }
+            case OP_POP:
+                if (stack.empty()) return false;
+                stack.pop_back(); ++ip; break;
+            case OP_JUMP_TO: {
+                const auto* dest = requireOp(ins, 0, YsaOperandType::U16);
+                if (!dest) return false;
+                ip = dest->u16Value; break;
+            }
+            case OP_JUMP_IF_FALSE: {
+                const auto* dest = requireOp(ins, 0, YsaOperandType::U16);
+                if (!dest || stack.empty()) return false;
+                const bool cond = stack.back().asBool();
+                ip = cond ? ip + 1 : dest->u16Value; break;
+            }
+            case OP_RETURN:
+            case OP_STOP:
+                ip = static_cast<int>(node.instructions.size());
+                break;
+            default:
+                return false;
+        }
+    }
+
+    return !stack.empty() && stack.back().asBool();
+}
+
+bool ExecuteNodeYsa(YsaProgram& program, const std::string& nodeName, bool interactive, RuntimeState& state,
+                    std::vector<std::string>* callStack) {
+    std::vector<std::string> localCallStack;
+    if (!callStack) {
+        localCallStack.push_back(nodeName);
+        callStack = &localCallStack;
+    } else {
+        callStack->push_back(nodeName);
+    }
+    struct PopOnExit {
+        std::vector<std::string>* stack;
+        bool active;
+        ~PopOnExit() { if (active && stack && !stack->empty()) stack->pop_back(); }
+    } popOnExit{callStack, !localCallStack.empty() ? false : true};
+
+    std::set<std::string> pinnedNodes(callStack->begin(), callStack->end());
+    if (!EnsureNodeLoaded(program, nodeName, &pinnedNodes)) return false;
     
     auto it = program.nodes.find(nodeName);
     if (it == program.nodes.end()) { std::cerr << "Node not found: " << nodeName << "\n"; return false; }
+    TouchCachedNode(program, nodeName);
 
     const YsaNode& node = it->second;
     std::cout << "\n--- " << nodeName << " ---\n";
@@ -562,7 +761,6 @@ bool ExecuteNodeYsa(YsaProgram& program, const std::string& nodeName, bool inter
 
     // Mark visited on all success exits (not before, so visited() returns false on the first visit)
     auto markVisited = [&]() {
-        state.visitedNodes.insert(nodeName);
         state.visitCounts[nodeName]++;
     };
 
@@ -643,7 +841,12 @@ bool ExecuteNodeYsa(YsaProgram& program, const std::string& nodeName, bool inter
 
             case OP_PEEK_AND_JUMP: {
                 if (stack.empty()) { std::cerr << "Stack empty for peek_and_jump\n"; return false; }
-                ip = static_cast<int>(stack.back().asFloat());
+                size_t jumpValueIndex = stack.size() - 1;
+                if (stack.back().type == Value::Type::Bool && stack.size() >= 2) {
+                    // Some compiled stories leave [destination, bool] on the stack.
+                    jumpValueIndex = stack.size() - 2;
+                }
+                ip = static_cast<int>(stack[jumpValueIndex].asFloat());
                 // Value stays on stack; option block will pop it
                 break;
             }
@@ -659,13 +862,16 @@ bool ExecuteNodeYsa(YsaProgram& program, const std::string& nodeName, bool inter
                 const auto* n = requireOp(ins, 0, YsaOperandType::String);
                 if (!n) return false;
                 markVisited();
-                return ExecuteNodeYsa(program, n->stringValue, interactive, state);
+                state.runNodeSignal++;
+                return ExecuteNodeYsa(program, n->stringValue, interactive, state, callStack);
             }
 
             case OP_DETOUR_TO_NODE: {
                 const auto* n = requireOp(ins, 0, YsaOperandType::String);
                 if (!n) return false;
-                if (!ExecuteNodeYsa(program, n->stringValue, interactive, state)) return false;
+                const uint64_t signalBefore = state.runNodeSignal;
+                if (!ExecuteNodeYsa(program, n->stringValue, interactive, state, callStack)) return false;
+                if (state.runNodeSignal != signalBefore) return true; // propagate jump out of detour callers
                 ++ip; break;
             }
 
@@ -673,13 +879,16 @@ bool ExecuteNodeYsa(YsaProgram& program, const std::string& nodeName, bool inter
                 if (stack.empty()) { std::cerr << "Stack empty for peek_and_run_node\n"; return false; }
                 const std::string target = stack.back().asString(); stack.pop_back();
                 markVisited();
-                return ExecuteNodeYsa(program, target, interactive, state);
+                state.runNodeSignal++;
+                return ExecuteNodeYsa(program, target, interactive, state, callStack);
             }
 
             case OP_PEEK_AND_DETOUR: {
                 if (stack.empty()) { std::cerr << "Stack empty for peek_and_detour\n"; return false; }
                 const std::string target = stack.back().asString(); stack.pop_back();
-                if (!ExecuteNodeYsa(program, target, interactive, state)) return false;
+                const uint64_t signalBefore = state.runNodeSignal;
+                if (!ExecuteNodeYsa(program, target, interactive, state, callStack)) return false;
+                if (state.runNodeSignal != signalBefore) return true; // propagate jump out of detour callers
                 ++ip; break;
             }
 
@@ -740,7 +949,12 @@ bool ExecuteNodeYsa(YsaProgram& program, const std::string& nodeName, bool inter
                 const auto* score = requireOp(ins, 1, YsaOperandType::U16);
                 const auto* dest  = requireOp(ins, 2, YsaOperandType::U16);
                 if (!cid || !score || !dest) return false;
-                saliencyCandidates.push_back({cid->stringValue, score->u16Value, dest->u16Value});
+                if (stack.empty()) { std::cerr << "Stack empty for add_saliency_candidate\n"; return false; }
+                const bool conditionPassed = stack.back().asBool();
+                stack.pop_back();
+                if (conditionPassed) {
+                    saliencyCandidates.push_back({cid->stringValue, score->u16Value, dest->u16Value});
+                }
                 ++ip; break;
             }
 
@@ -748,16 +962,52 @@ bool ExecuteNodeYsa(YsaProgram& program, const std::string& nodeName, bool inter
                 const auto* nop  = requireOp(ins, 0, YsaOperandType::String);
                 const auto* dest = requireOp(ins, 1, YsaOperandType::U16);
                 if (!nop || !dest) return false;
-                const int score = state.visitedNodes.count(nop->stringValue) > 0 ? 0 : 1;
-                saliencyCandidates.push_back({nop->stringValue, score, dest->u16Value});
+                bool conditionPassed = true;
+                const std::string conditionNode = "$Yarn.Internal." + nodeName + "." + nop->stringValue + ".Condition.0";
+                if (program.nodes.find(conditionNode) != program.nodes.end() || program.nodeIndex.find(conditionNode) != program.nodeIndex.end()) {
+                    conditionPassed = EvaluateNodeConditionYsa(program, conditionNode, state, callStack);
+                }
+                if (conditionPassed) {
+                    const auto visitIt = state.visitCounts.find(nop->stringValue);
+                    const int score = (visitIt != state.visitCounts.end() && visitIt->second > 0) ? 0 : 1;
+                    saliencyCandidates.push_back({nop->stringValue, score, dest->u16Value});
+                }
                 ++ip; break;
             }
 
             case OP_SELECT_SALIENCY_CANDIDATE: {
                 if (saliencyCandidates.empty()) { std::cerr << "No saliency candidates\n"; return false; }
-                auto best = std::max_element(saliencyCandidates.begin(), saliencyCandidates.end(),
-                    [](const SaliencyCandidate& a, const SaliencyCandidate& b) { return a.complexityScore < b.complexityScore; });
-                const int dest = best->destination;
+                int bestScore = std::numeric_limits<int>::min();
+                std::vector<size_t> bestScoreIndices;
+                bestScoreIndices.reserve(saliencyCandidates.size());
+                for (size_t i = 0; i < saliencyCandidates.size(); ++i) {
+                    const int score = saliencyCandidates[i].complexityScore;
+                    if (score > bestScore) {
+                        bestScore = score;
+                        bestScoreIndices.clear();
+                        bestScoreIndices.push_back(i);
+                    } else if (score == bestScore) {
+                        bestScoreIndices.push_back(i);
+                    }
+                }
+                int leastSelected = std::numeric_limits<int>::max();
+                std::vector<size_t> leastRecentlyViewedIndices;
+                leastRecentlyViewedIndices.reserve(bestScoreIndices.size());
+                for (size_t idx : bestScoreIndices) {
+                    const auto countIt = state.saliencySelectionCounts.find(saliencyCandidates[idx].id);
+                    const int selectedCount = countIt != state.saliencySelectionCounts.end() ? countIt->second : 0;
+                    if (selectedCount < leastSelected) {
+                        leastSelected = selectedCount;
+                        leastRecentlyViewedIndices.clear();
+                        leastRecentlyViewedIndices.push_back(idx);
+                    } else if (selectedCount == leastSelected) {
+                        leastRecentlyViewedIndices.push_back(idx);
+                    }
+                }
+                std::uniform_int_distribution<size_t> dist(0, leastRecentlyViewedIndices.size() - 1);
+                const size_t chosen = leastRecentlyViewedIndices[dist(state.rng)];
+                state.saliencySelectionCounts[saliencyCandidates[chosen].id] += 1;
+                const int dest = saliencyCandidates[chosen].destination;
                 saliencyCandidates.clear();
                 stack.push_back(Value::fromFloat(static_cast<float>(dest)));
                 stack.push_back(Value::fromBool(true));
@@ -780,6 +1030,67 @@ bool ExecuteNode(const Yarn::Program& program, const std::string& nodeName,
                  const std::map<std::string, std::string>& lineTable,
                  bool interactive, RuntimeState& state);
 
+bool EvaluateNodeConditionYarnc(const Yarn::Program& program, const std::string& conditionNodeName,
+                                RuntimeState& state) {
+    auto nit = program.nodes().find(conditionNodeName);
+    if (nit == program.nodes().end()) return false;
+
+    const Yarn::Node& node = nit->second;
+    std::vector<Value> stack;
+    int ip = 0;
+
+    while (ip >= 0 && ip < node.instructions_size()) {
+        const Yarn::Instruction& ins = node.instructions(ip);
+
+        if (ins.has_pushstring()) { stack.push_back(Value::fromString(ins.pushstring().value())); ++ip; continue; }
+        if (ins.has_pushfloat())  { stack.push_back(Value::fromFloat(ins.pushfloat().value())); ++ip; continue; }
+        if (ins.has_pushbool())   { stack.push_back(Value::fromBool(ins.pushbool().value())); ++ip; continue; }
+        if (ins.has_pushvariable()) {
+            const std::string& varName = ins.pushvariable().variablename();
+            auto vit = state.variables.find(varName);
+            stack.push_back(vit != state.variables.end() ? vit->second : Value::fromFloat(0.0f));
+            ++ip; continue;
+        }
+        if (ins.has_callfunc()) {
+            const std::string& fn = ins.callfunc().functionname();
+            if (stack.empty()) return false;
+            const int arity = static_cast<int>(stack.back().asFloat()); stack.pop_back();
+            if (arity < 0 || static_cast<int>(stack.size()) < arity) return false;
+            std::vector<Value> args;
+            args.reserve(static_cast<size_t>(arity));
+            for (int a = 0; a < arity; ++a) { args.push_back(stack.back()); stack.pop_back(); }
+            std::reverse(args.begin(), args.end());
+            std::string funcName = fn;
+            const auto dotPos = funcName.rfind('.');
+            if (dotPos != std::string::npos) funcName = funcName.substr(dotPos + 1);
+            stack.push_back(CallFunction(funcName, std::move(args), state));
+            ++ip; continue;
+        }
+        if (ins.has_pop()) {
+            if (stack.empty()) return false;
+            stack.pop_back();
+            ++ip; continue;
+        }
+        if (ins.has_jumpto()) {
+            ip = ins.jumpto().destination();
+            continue;
+        }
+        if (ins.has_jumpiffalse()) {
+            if (stack.empty()) return false;
+            const bool cond = stack.back().asBool(); // PEEK - value remains for following pop
+            ip = cond ? ip + 1 : ins.jumpiffalse().destination();
+            continue;
+        }
+        if (ins.has_return_() || ins.has_stop()) {
+            break;
+        }
+
+        return false;
+    }
+
+    return !stack.empty() && stack.back().asBool();
+}
+
 bool ExecuteNode(const Yarn::Program& program, const std::string& nodeName,
                  const std::map<std::string, std::string>& lineTable,
                  bool interactive, RuntimeState& state) {
@@ -795,7 +1106,6 @@ bool ExecuteNode(const Yarn::Program& program, const std::string& nodeName,
     int ip = 0;
 
     auto markVisited = [&]() {
-        state.visitedNodes.insert(nodeName);
         state.visitCounts[nodeName]++;
     };
 
@@ -845,7 +1155,12 @@ bool ExecuteNode(const Yarn::Program& program, const std::string& nodeName,
         }
         if (ins.has_peekandjump()) {
             if (stack.empty()) { std::cerr << "Stack empty for peek_and_jump\n"; return false; }
-            ip = static_cast<int>(stack.back().asFloat()); continue;
+            size_t jumpValueIndex = stack.size() - 1;
+            if (stack.back().type == Value::Type::Bool && stack.size() >= 2) {
+                // Handle [destination, bool] stack shape produced by some story builds.
+                jumpValueIndex = stack.size() - 2;
+            }
+            ip = static_cast<int>(stack[jumpValueIndex].asFloat()); continue;
         }
         if (ins.has_pop())    { if (!stack.empty()) stack.pop_back(); ++ip; continue; }
         if (ins.has_stop())   { std::cout << "[stop]\n"; markVisited(); return true; }
@@ -853,22 +1168,28 @@ bool ExecuteNode(const Yarn::Program& program, const std::string& nodeName,
 
         if (ins.has_runnode()) {
             markVisited();
+            state.runNodeSignal++;
             return ExecuteNode(program, ins.runnode().nodename(), lineTable, interactive, state);
         }
         if (ins.has_detourtonode()) {
+            const uint64_t signalBefore = state.runNodeSignal;
             if (!ExecuteNode(program, ins.detourtonode().nodename(), lineTable, interactive, state)) return false;
+            if (state.runNodeSignal != signalBefore) return true; // propagate jump out of detour callers
             ++ip; continue;
         }
         if (ins.has_peekandrunnode()) {
             if (stack.empty()) return false;
             const std::string target = stack.back().asString(); stack.pop_back();
             markVisited();
+            state.runNodeSignal++;
             return ExecuteNode(program, target, lineTable, interactive, state);
         }
         if (ins.has_peekanddetourtonode()) {
             if (stack.empty()) return false;
             const std::string target = stack.back().asString(); stack.pop_back();
+            const uint64_t signalBefore = state.runNodeSignal;
             if (!ExecuteNode(program, target, lineTable, interactive, state)) return false;
+            if (state.runNodeSignal != signalBefore) return true; // propagate jump out of detour callers
             ++ip; continue;
         }
 
@@ -905,20 +1226,62 @@ bool ExecuteNode(const Yarn::Program& program, const std::string& nodeName,
 
         if (ins.has_addsaliencycandidate()) {
             const auto& sc = ins.addsaliencycandidate();
-            saliencyCandidates.push_back({sc.contentid(), sc.complexityscore(), sc.destination()});
+            if (stack.empty()) { std::cerr << "Stack empty for add_saliency_candidate\n"; return false; }
+            const bool conditionPassed = stack.back().asBool();
+            stack.pop_back();
+            if (conditionPassed) {
+                saliencyCandidates.push_back({sc.contentid(), sc.complexityscore(), sc.destination()});
+            }
             ++ip; continue;
         }
         if (ins.has_addsaliencycandidatefromnode()) {
             const auto& sc = ins.addsaliencycandidatefromnode();
-            const int score = state.visitedNodes.count(sc.nodename()) > 0 ? 0 : 1;
-            saliencyCandidates.push_back({sc.nodename(), score, sc.destination()});
+            bool conditionPassed = true;
+            const std::string conditionNode =
+                "$Yarn.Internal." + nodeName + "." + sc.nodename() + ".Condition.0";
+            if (program.nodes().find(conditionNode) != program.nodes().end()) {
+                conditionPassed = EvaluateNodeConditionYarnc(program, conditionNode, state);
+            }
+            if (conditionPassed) {
+                const auto visitIt = state.visitCounts.find(sc.nodename());
+                const int score = (visitIt != state.visitCounts.end() && visitIt->second > 0) ? 0 : 1;
+                saliencyCandidates.push_back({sc.nodename(), score, sc.destination()});
+            }
             ++ip; continue;
         }
         if (ins.has_selectsaliencycandidate()) {
             if (saliencyCandidates.empty()) { std::cerr << "No saliency candidates\n"; return false; }
-            auto best = std::max_element(saliencyCandidates.begin(), saliencyCandidates.end(),
-                [](const SaliencyCandidate& a, const SaliencyCandidate& b) { return a.complexityScore < b.complexityScore; });
-            const int dest = best->destination;
+            int bestScore = std::numeric_limits<int>::min();
+            std::vector<size_t> bestScoreIndices;
+            bestScoreIndices.reserve(saliencyCandidates.size());
+            for (size_t i = 0; i < saliencyCandidates.size(); ++i) {
+                const int score = saliencyCandidates[i].complexityScore;
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestScoreIndices.clear();
+                    bestScoreIndices.push_back(i);
+                } else if (score == bestScore) {
+                    bestScoreIndices.push_back(i);
+                }
+            }
+            int leastSelected = std::numeric_limits<int>::max();
+            std::vector<size_t> leastRecentlyViewedIndices;
+            leastRecentlyViewedIndices.reserve(bestScoreIndices.size());
+            for (size_t idx : bestScoreIndices) {
+                const auto countIt = state.saliencySelectionCounts.find(saliencyCandidates[idx].id);
+                const int selectedCount = countIt != state.saliencySelectionCounts.end() ? countIt->second : 0;
+                if (selectedCount < leastSelected) {
+                    leastSelected = selectedCount;
+                    leastRecentlyViewedIndices.clear();
+                    leastRecentlyViewedIndices.push_back(idx);
+                } else if (selectedCount == leastSelected) {
+                    leastRecentlyViewedIndices.push_back(idx);
+                }
+            }
+            std::uniform_int_distribution<size_t> dist(0, leastRecentlyViewedIndices.size() - 1);
+            const size_t chosen = leastRecentlyViewedIndices[dist(state.rng)];
+            state.saliencySelectionCounts[saliencyCandidates[chosen].id] += 1;
+            const int dest = saliencyCandidates[chosen].destination;
             saliencyCandidates.clear();
             stack.push_back(Value::fromFloat(static_cast<float>(dest)));
             stack.push_back(Value::fromBool(true));

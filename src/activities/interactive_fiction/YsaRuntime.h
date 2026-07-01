@@ -70,8 +70,8 @@ class YsaRuntime {
 
   struct RuntimeState {
     std::map<std::string, Value> variables;
-    std::set<std::string> visitedNodes;
     std::map<std::string, int> visitCounts;
+    std::map<std::string, int> saliencySelectionCounts;
     std::mt19937 rng{std::random_device{}()};
   };
 
@@ -94,6 +94,10 @@ class YsaRuntime {
 
   uint16_t version = 0;
   std::map<std::string, Node> nodes;  // Parsed nodes cache
+  std::map<std::string, uint32_t> nodeLastUseTick;
+  std::map<std::string, size_t> nodeEstimatedBytes;
+  size_t cachedNodeBytes = 0;
+  uint32_t nextNodeUseTick = 1;
   std::map<std::string, NodeIndex> nodeIndex;  // All nodes: offset + count (no file buffer)
   std::string storagePath;  // Path for reopening file on-demand
   std::map<std::string, std::string> lineTable;
@@ -125,7 +129,10 @@ class YsaRuntime {
   bool readString(const std::vector<uint8_t>& data, size_t& offset, std::string& out) const;
 
   bool buildNodeIndex(const std::vector<uint8_t>& headerData);
-  bool ensureNodeLoaded(const std::string& nodeName);
+  bool ensureNodeLoaded(const std::string& nodeName, const std::set<std::string>* extraPinnedNodes = nullptr);
+  void touchNode(const std::string& nodeName);
+  size_t estimateNodeBytes(const Node& node) const;
+  void trimNodeCache(const std::set<std::string>* extraPinnedNodes, const std::string* justLoadedNode);
 
   const Operand* requireOperand(const Instruction& ins, size_t index, OperandType type);
   std::vector<Value> popSubstitutions(int count);
