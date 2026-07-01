@@ -2,7 +2,7 @@
 
 ## Overview
 
-YarnSpinner is a dialogue system that compiles `.yarn` narrative scripts into bytecode, which is then executed by a virtual machine. The Unreal Engine prototype provides a portable C++ core that we will adapt for Crosspoint.
+YarnSpinner is a dialogue system that compiles `.yarn` narrative scripts into bytecode (`.yarnc`), which is then executed by a virtual machine. The Unreal Engine prototype provides a portable C++ core that we will adapt for Crosspoint.
 
 **Key Source:** https://github.com/YarnSpinnerTool/YarnSpinner-Unreal-Prototype
 
@@ -42,9 +42,9 @@ class Value {
 - Numbers with decimals stringify with decimals
 - Parsing strings as numbers: numeric prefix extraction
 
-### 2. Protobuf Bytecode Format
+### 2. YarnC Protobuf Format (Authoring/Build-Time)
 
-The compiled `.yarn` file is a Protobuf binary containing:
+The compiled `.yarnc` file is a Protobuf binary containing:
 
 **Key Message Types (auto-generated from `.proto`):**
 
@@ -82,6 +82,8 @@ message Instruction {
 **Files to Include:**
 - `yarn_spinner.pb.h / .cc` - Core protobuf messages (Program, Node, Instruction)
 - `compiler_output.pb.h / .cc` - Output format definition
+
+For firmware deployment, this project will **not** parse protobuf on-device. Instead, `.yarnc` and line tables are converted offline into a compact device-native runtime format.
 
 ### 3. Virtual Machine (`VirtualMachine.h/cpp`)
 
@@ -289,7 +291,7 @@ class State {
 
 1. ✨ `YarnVariableStorage` - Concrete `IVariableStorage` implementation
 2. ✨ `YarnLogger` - Concrete `ILogger` implementation (bridges to Logging.h)
-3. ✨ Protobuf parsing (load `.yarn` from binary)
+3. ✨ Offline asset compiler (convert `.yarnc` + CSV to device-native format)
 4. ✨ Text presentation layer (wrapping, pagination)
 
 ## Key Modifications Needed
@@ -308,11 +310,11 @@ class State {
 ### 2. Protobuf Integration
 
 **Options:**
-1. Use full protobuf library (adds ~300KB, acceptable)
-2. Use protobuf-lite (smaller, sufficient for this use case)
-3. Write custom `.yarn` parser (more work, but lighter)
+1. Parse protobuf directly on device (highest runtime overhead)
+2. Parse protobuf in host tooling and emit native assets (recommended)
+3. Maintain custom parser/runtime for raw `.yarnc` (more work, least desirable)
 
-**Recommended:** Protobuf-lite for embedded constraint.
+**Recommended:** Parse `.yarnc` in host tooling, ship native assets to firmware.
 
 ### 3. Thread Safety
 
@@ -449,7 +451,7 @@ You see two paths.
 | Issue | Severity | Solution |
 |-------|----------|----------|
 | Unreal-specific macros | HIGH | Search & replace all UE types |
-| Protobuf version mismatch | MEDIUM | Use protobuf-lite; pin version in platformio.ini |
+| Protobuf version mismatch | MEDIUM | Keep protobuf in host toolchain only; pin YarnSpinner/protobuf versions |
 | Memory allocation patterns | LOW | Use STL allocators; profile heap usage |
 | Missing #include guards for Unreal | HIGH | Remove UE includes, add C++ standard ones |
 | Thread safety assumptions | LOW | Document: VM access from loop only |

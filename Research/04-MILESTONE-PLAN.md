@@ -2,7 +2,7 @@
 
 ## Project Phases Overview
 
-The implementation is structured in 6 phases across approximately 4-5 weeks of development work. Each phase delivers a functional, testable component.
+The implementation is structured in 7 phases across approximately 5 weeks of development work. Each phase delivers a functional, testable component.
 
 **Key Philosophy:** Get integration working first (barebones activity), then layer on YarnSpinner complexity.
 
@@ -17,27 +17,32 @@ Phase 2: Multi-Line Text & Pagination
 ├─ Deliverable: Text wrapping, page navigation
 └─ Risk: Display refresh optimization
 
-Phase 3: YarnSpinner Core Adaptation
+Phase 3: YarnSpinner Core Adaptation (Host Validation)
 ├─ Weeks 1.5-2.5 (~20 hours)
-├─ Deliverable: YarnSpinner core ported, testable
-└─ Risk: Protobuf integration
+├─ Deliverable: YarnSpinner behavior validated in host harness
+└─ Risk: Runtime/schema drift across YarnSpinner versions
 
-Phase 4: YarnSpinner Integration
+Phase 4: YarnC -> Device-Native Asset Compiler
 ├─ Weeks 2.5-3 (~12 hours)
-├─ Deliverable: Activity uses VM to execute dialogue
+├─ Deliverable: Offline compiler that emits MCU-optimized story assets
+└─ Risk: Converter correctness and format versioning
+
+Phase 5: Firmware Runtime Integration
+├─ Weeks 3-3.5 (~16 hours)
+├─ Deliverable: Activity executes native assets without protobuf runtime
 └─ Risk: State management complexity
 
-Phase 5: Session Management
-├─ Weeks 3-3.5 (~16 hours)
+Phase 6: Session Management
+├─ Weeks 3.5-4.5 (~16 hours)
 ├─ Deliverable: File browser, save/load, bookmarks
 └─ Risk: Storage layer edge cases
 
-Phase 6: Polish & Optimization
-├─ Weeks 3.5-4.5 (~16 hours)
+Phase 7: Polish & Optimization
+├─ Weeks 4.5-5 (~16 hours)
 ├─ Deliverable: Complete, tested, optimized
 └─ Risk: Performance tuning
 
-Total estimated effort: 80-100 hours
+Total estimated effort: 94-100 hours
 ```
 
 ---
@@ -485,19 +490,20 @@ Render:
 
 ### Deliverables
 
-#### 3.1 Protobuf Setup
+#### 3.1 Protobuf Setup (Host-Side Only)
 **Effort:** 4 hours
 
 **Tasks:**
-1. Research protobuf-lite availability for ESP32 platform
-2. Add protobuf dependency to `platformio.ini` (or use platform-specific package manager)
-3. Copy protobuf-generated files (`.pb.h`, `.pb.cc`) from YarnSpinner repo
+1. Pin YarnSpinner console/protobuf versions for host build reproducibility
+2. Generate/load protobuf messages in harness/compiler tooling (not firmware runtime)
+3. Copy protobuf-generated files (`.pb.h`, `.pb.cc`) into host tooling project
 4. Create build configuration for protobuf code generation (if needed)
 
 **Definition of Done:**
-- [ ] Protobuf library compiles without errors
+- [ ] Host protobuf library compiles without errors
 - [ ] `yarn_spinner.pb.h` and `compiler_output.pb.h` can be included
 - [ ] Simple protobuf message serialization/deserialization works
+- [ ] Firmware target has no protobuf dependency added
 
 **Location:** `src/lib/yarnspinner_core/`
 
@@ -677,44 +683,66 @@ Before moving to Phase 4:
 
 ---
 
-## Phase 4: YarnSpinner Integration (Weeks 2.5-3, ~12 hours)
+## Phase 4: YarnC -> Device-Native Asset Compiler (Weeks 2.5-3, ~12 hours)
 
 ### Goals
-- [ ] Integrate YarnSpinner VM into InteractiveFictionActivity
-- [ ] Replace dummy text with actual dialogue execution
-- [ ] Handle Line, Option, and Command callbacks from VM
-- [ ] Test with sample `.yarn` files
+- [ ] Define a compact, versioned runtime asset format optimized for ESP32
+- [ ] Implement a converter from YarnSpinner `.yarnc` + line tables to native assets
+- [ ] Validate converter output against harness behavior using golden tests
+- [ ] Document the format and compatibility guarantees
 
-### Deliverables (Brief Summary)
+### Deliverables
+1. **Format Spec** - instruction encoding, line table layout, jump/option representation, version header
+2. **Compiler Tool** - deterministic converter executable/script in `tools/`
+3. **Validation Suite** - sample projects compiled both ways with expected transcript comparison
+4. **Integration Contract** - firmware loader contract for native assets
 
-1. **VM Initialization** - Load `.yarn` file in activity onEnter
-2. **Dialogue Loop** - Wire Continue() calls to button presses
-3. **Option Selection** - Display options, handle selection
-4. **State Callbacks** - Display lines and options as they arrive
-
-See Phase 3 for YarnSpinner Core details.
+### Definition of Done
+- [ ] Converter emits deterministic output for the same `.yarnc` input
+- [ ] Native asset output is smaller and/or lower-overhead than loading protobuf on-device
+- [ ] Golden transcript tests pass for branching and options
+- [ ] Format versioning and upgrade path documented
 
 ---
 
-## Phase 5: Session Management (Weeks 3-3.5, ~16 hours)
+## Phase 5: Firmware Runtime Integration (Weeks 3-3.5, ~16 hours)
 
 ### Goals
-- [ ] Integrate with Crosspoint file browser for `.yarn` file selection
+- [ ] Integrate native-format runtime into InteractiveFictionActivity
+- [ ] Replace dummy text with native asset execution
+- [ ] Handle line/option callbacks from runtime
+- [ ] Test with compiled native assets
+
+### Deliverables (Brief Summary)
+
+1. **Runtime Initialization** - Load native story asset in activity onEnter
+2. **Dialogue Loop** - Wire advance/select input to runtime step functions
+3. **Option Selection** - Display options, handle selection
+4. **State Callbacks** - Display lines and options as they arrive
+
+See Phase 3 and Phase 4 for conversion/runtime details.
+
+---
+
+## Phase 6: Session Management (Weeks 3.5-4.5, ~16 hours)
+
+### Goals
+- [ ] Integrate with Crosspoint file browser for compiled story asset selection
 - [ ] Implement save/load state persistence
 - [ ] Create bookmarks (save named positions in dialogue)
 
 ### Deliverables (Brief Summary)
 
-1. **File Browser Integration** - Register `.yarn` extension, enable file selection
+1. **File Browser Integration** - Register native story asset extension, enable file selection
 2. **State Persistence** - Save/load via JSON to SD card
 3. **Bookmarks** - Named save points within stories
 4. **Resume UI** - Menu to start new or resume saved games
 
-See the old 04-MILESTONE-PLAN document for detailed Phase 4-5 breakdown (originally called Phase 4-5).
+This section now assumes Phase 4 compiler output as the runtime input format.
 
 ---
 
-## Phase 6: Polish & Optimization (Weeks 3.5-4.5, ~16 hours)
+## Phase 7: Polish & Optimization (Weeks 4.5-5, ~16 hours)
 
 ### Goals
 - [ ] Performance tuning and optimization
@@ -738,7 +766,7 @@ If fundamental issues arise:
 1. **Phase 1 Failure**: Revert activity code, keep repo clean
 2. **Phase 2 Failure**: Simplify to single-page display (defer pagination)
 3. **Phase 3 Failure**: Create standalone VM tester (not integrated yet)
-4. **Phase 4+ Failure**: Deploy without YarnSpinner initially, use dummy data
+4. **Phase 5+ Failure**: Deploy without runtime integration initially, use dummy data
 
 Default fallback: MVP version with dummy text cycling (Phase 1 + Phase 2).
 
@@ -778,19 +806,24 @@ Default fallback: MVP version with dummy text cycling (Phase 1 + Phase 2).
 - ✅ Unit tests pass (>80% coverage)
 - ✅ No Unreal dependencies
 
-### Phase 4 (YarnSpinner Integration)
-- ✅ Activity uses VM to run dialogue
+### Phase 4 (Asset Compiler)
+- ✅ `.yarnc` + CSV convert to native format deterministically
+- ✅ Golden transcript tests match harness output
+- ✅ Format schema/version documented
+
+### Phase 5 (Firmware Runtime Integration)
+- ✅ Activity uses native runtime to run dialogue
 - ✅ Lines and options display correctly
 - ✅ Option selection works
 - ✅ Branching logic correct
 
-### Phase 5 (Session Management)
-- ✅ File browser shows `.yarn` files
+### Phase 6 (Session Management)
+- ✅ File browser shows native story asset files
 - ✅ Save/load seamless
 - ✅ Bookmarks functional
 - ✅ No data loss
 
-### Phase 6 (Polish)
+### Phase 7 (Polish)
 - ✅ Performance acceptable
 - ✅ All edge cases handled
 - ✅ Documentation complete
@@ -855,6 +888,6 @@ If fundamental issues arise:
 1. **Phase 1 Failure**: Revert all YarnSpinner code, restore original repo state
 2. **Phase 2 Failure**: Simplify presentation (use existing text rendering, defer pagination)
 3. **Phase 3 Failure**: Create standalone testing app (not integrated into Crosspoint yet)
-4. **Phase 4+ Failure**: Deploy without save/bookmarks initially, add later
+4. **Phase 6+ Failure**: Deploy without save/bookmarks initially, add later
 
 Default fallback: MVP version with linear story support only (no branching/options).

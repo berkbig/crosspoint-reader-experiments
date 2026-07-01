@@ -71,22 +71,27 @@ All planning documents are located in the `Research/` directory:
    - Implement vertical scrolling
    - Add visual indicators
 
-3. **Phase 3** (Week 1.5-2.5, ~20 hours): YarnSpinner Core Adaptation
+3. **Phase 3** (Week 1.5-2.5, ~20 hours): YarnSpinner Core Adaptation (Host Validation)
    - Port from Unreal Engine
    - Remove UE dependencies
-   - Implement storage & logging
+   - Validate runtime behavior in harness
 
-4. **Phase 4** (Week 2.5-3, ~12 hours): YarnSpinner Integration
-   - Wire VM into Activity
+4. **Phase 4** (Week 2.5-3, ~12 hours): YarnC → Device-Native Compiler
+   - Compile `.yarnc` + line tables to a compact runtime format
+   - Add golden tests for converter correctness
+   - Version the native asset format
+
+5. **Phase 5** (Week 3-3.5, ~16 hours): Firmware Runtime Integration
+   - Load native assets in Activity
    - Replace dummy text with real dialogue
-   - Test with sample `.yarn` files
+   - Keep protobuf out of firmware runtime
 
-5. **Phase 5** (Week 3-3.5, ~16 hours): Session Management
+6. **Phase 6** (Week 3.5-4.5, ~16 hours): Session Management
    - File browser integration
    - Save/load state
    - Bookmarks
 
-6. **Phase 6** (Week 3.5-4.5, ~16 hours): Polish & Optimization
+7. **Phase 7** (Week 4.5-5, ~16 hours): Polish & Optimization
    - Performance tuning
    - Edge case testing
    - Documentation
@@ -179,7 +184,7 @@ Includes:
 | 01-OVERVIEW.md | 6.4 KB | Project vision, scope, architecture |
 | 02-CROSSPOINT-ACTIVITY-DEEP-DIVE.md | 9.9 KB | Activity system deep dive |
 | 03-YARNSPINNER-CORE-DEEP-DIVE.md | 13.5 KB | YarnSpinner architecture |
-| 04-MILESTONE-PLAN.md | 20+ KB | Detailed phase breakdown (6 phases) |
+| 04-MILESTONE-PLAN.md | 20+ KB | Detailed phase breakdown (7 phases) |
 | RESTRUCTURING-SUMMARY.md | 7.4 KB | Plan reorganization rationale |
 | PHASE-1-QUICK-REFERENCE.md | 8.0 KB | Phase 1 implementation guide |
 | **TOTAL** | **~65 KB** | Complete planning documentation |
@@ -202,14 +207,18 @@ Friday:    Code review + merge
 - Improve text wrapping, add scrolling
 
 ### Week 1.5-2.5: YarnSpinner Core (Phase 3)
-- While Phase 1-2 are being tested, port YarnSpinner
-- Focus on removing UE dependencies
+- While Phase 1-2 are being tested, port/validate YarnSpinner core behavior
+- Focus on removing UE dependencies and harness parity
 
-### Week 2.5-3: Integration (Phase 4)
-- Wire Phase 2 rendering + Phase 3 VM together
-- Test with sample `.yarn` files
+### Week 2.5-3: Asset Compiler (Phase 4)
+- Build `.yarnc` -> device-native converter
+- Validate native assets against harness transcript output
 
-### Week 3+: Polish & Deploy (Phase 5-6)
+### Week 3-3.5: Firmware Integration (Phase 5)
+- Wire Phase 2 rendering + native runtime together
+- Test with compiled native story assets
+
+### Week 3.5+: Session + Polish (Phase 6-7)
 - Session management, bookmarks
 - Performance tuning, testing
 
@@ -227,9 +236,9 @@ Friday:    Code review + merge
 - ✅ **04-MILESTONE-PLAN.md** Phase 3 section - Porting tasks
 - ✅ Download YarnSpinner source from GitHub (prototype)
 
-### Before Integration (Phase 4)
-- ✅ **04-MILESTONE-PLAN.md** Phase 4 section - Integration checklist
-- ✅ Completed Phase 1-3 code review
+### Before Integration (Phase 5)
+- ✅ **04-MILESTONE-PLAN.md** Phase 5 section - Integration checklist
+- ✅ Completed Phase 1-4 code review
 
 ---
 
@@ -243,7 +252,7 @@ Friday:    Code review + merge
 - ✅ Tested on hardware
 
 ### Overall Project Completion
-- ✅ YarnSpinner dialogue executes end-to-end
+- ✅ Native-format dialogue executes end-to-end
 - ✅ Options and branching work
 - ✅ State persists across sessions
 - ✅ >80% test coverage
@@ -309,6 +318,7 @@ Friday:    Code review + merge
 
 - Source code will go in: `src/activities/interactive_fiction/`
 - YarnSpinner core will go in: `src/lib/yarnspinner_core/`
+- Asset compiler will go in: `tools/yarn_asset_compiler/`
 - Tests will go in: `test/lib/yarnspinner_core/`
 - Reference implementations: `src/activities/reader/TxtReaderActivity.*`
 
@@ -316,4 +326,4 @@ Friday:    Code review + merge
 
 **Last Updated:** June 30, 2026  
 **Status:** ✅ Planning Complete - Ready for Implementation  
-**Next Steps:** Execute Phase 1 starting Week 1
+**Next Steps:** Execute native-asset compiler and firmware runtime integration phases
