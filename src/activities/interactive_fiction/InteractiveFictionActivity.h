@@ -2,34 +2,35 @@
 
 #include "activities/Activity.h"
 #include "fontIds.h"
+#include "YsaRuntime.h"
+#include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
-#include <memory>
-#include <cstdint>
-
-class TextUtils;
 
 class InteractiveFictionActivity final : public Activity {
-  std::vector<std::string> textBlocks;
-  int currentBlockIndex = 0;
+  std::unique_ptr<YsaRuntime> runtime;
+
+  std::vector<std::string> visibleLines;
   int scrollOffset = 0;
   int maxVisibleLines = 13;
   int totalWrappedLines = 0;
-  const int fontId = UI_12_FONT_ID;
-  uint32_t lastButtonPressTime = 0;
-  static constexpr uint32_t DEBOUNCE_MS = 200;
+  static constexpr int kFontId = UI_12_FONT_ID;
+  bool loadFailed = false;
 
   // Helper methods
-  void generateTestBlocks();
   void onSelectPressed();
   void onBackPressed();
   void onScrollUp();
   void onScrollDown();
-  void updateScrollBounds();
+  void updateWrappedLines();
+  void scrollToBottom();
+  int getVisibleLineCount() const;
 
  public:
   explicit InteractiveFictionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
       : Activity("InteractiveFiction", renderer, mappedInput) {}
+  ~InteractiveFictionActivity() override;
 
   void onEnter() override;
   void onExit() override;
