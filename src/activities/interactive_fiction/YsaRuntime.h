@@ -19,7 +19,7 @@ class YsaRuntime {
   bool chooseSelectedOption();
   bool moveSelection(int delta);
 
-  bool hasStory() const { return !nodes.empty(); }
+  bool hasStory() const { return !nodes.empty() || !nodeIndex.empty(); }
   bool isWaitingForChoice() const { return waitingForChoice; }
   bool isFinished() const { return finished; }
   bool hasError() const { return errored; }
@@ -87,8 +87,15 @@ class YsaRuntime {
     int destination = -1;
   };
 
+  struct NodeIndex {
+    size_t fileOffset = 0;
+    uint16_t instructionCount = 0;
+  };
+
   uint16_t version = 0;
-  std::map<std::string, Node> nodes;
+  std::map<std::string, Node> nodes;  // Parsed nodes cache
+  std::map<std::string, NodeIndex> nodeIndex;  // All nodes: offset + count
+  std::vector<uint8_t> fileData;  // Raw file buffer for on-demand parsing
   std::map<std::string, std::string> lineTable;
   std::map<std::string, Value> initialValues;
 
@@ -118,12 +125,13 @@ class YsaRuntime {
   bool readString(const std::vector<uint8_t>& data, size_t& offset, std::string& out) const;
 
   bool loadFromBuffer(const std::vector<uint8_t>& data);
+  bool ensureNodeLoaded(const std::string& nodeName);
 
   const Operand* requireOperand(const Instruction& ins, size_t index, OperandType type);
   std::vector<Value> popSubstitutions(int count);
   std::string lookupLine(const std::string& lineId) const;
   std::string applySubstitutions(const std::string& text, const std::vector<Value>& substitutions) const;
   Value callFunction(std::string name, std::vector<Value> args);
+  bool evaluateSmartVariable(const std::string& variableName, Value& outValue, std::set<std::string>& activeNodes);
   int firstAvailableOption() const;
 };
-

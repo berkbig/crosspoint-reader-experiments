@@ -1,5 +1,7 @@
 #include "InteractiveFictionActivity.h"
 
+#include <FsHelpers.h>
+#include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
 
@@ -10,7 +12,7 @@
 #include "components/UITheme.h"
 
 namespace {
-constexpr const char* kStoryPath = "/interactive_fiction/main.ysa";
+constexpr const char* kStoryDir = "/interactive_fiction";
 constexpr int kContentPadding = 8;
 constexpr int kLineHeight = 20;
 constexpr int kHeaderSpacing = 6;
@@ -22,12 +24,24 @@ void InteractiveFictionActivity::onEnter() {
   LOG_INF("IF", "InteractiveFictionActivity::onEnter");
 
   runtime = std::make_unique<YsaRuntime>();
+  storyFiles.clear();
+  activeStoryPath.clear();
+  selectedStoryIndex = 0;
+  selectingStory = false;
   loadFailed = false;
   scrollOffset = 0;
 
-  if (!runtime->loadFromStorage(kStoryPath) || !runtime->start("Start")) {
+  discoverStories();
+
+  if (storyFiles.empty()) {
     loadFailed = true;
-    LOG_ERR("IF", "YSA load/start failed: %s", runtime->getError().c_str());
+  } else if (storyFiles.size() == 1) {
+    if (!loadSelectedStory()) {
+      loadFailed = true;
+      LOG_ERR("IF", "YSA load/start failed: %s", runtime->getError().c_str());
+    }
+  } else {
+    selectingStory = true;
   }
 
   updateWrappedLines();
@@ -38,6 +52,26 @@ void InteractiveFictionActivity::onEnter() {
 void InteractiveFictionActivity::onExit() {
   LOG_INF("IF", "InteractiveFictionActivity::onExit");
   runtime.reset();
+}
+
+void InteractiveFictionActivity::discoverStories() {
+  storyFiles.clear();
+  const auto entries = Storage.listFiles(kStoryDir, 200);
+  for (const auto& entry : entries) {
+    const std::string filename = entry.c_str();
+    if (FsHelpers::checkFileExtension(filename, ".ysa")) {
+      storyFiles.push_back(filename);
+    }
+  }
+  FsHelpers::sortFileList(storyFiles);
+}
+
+bool InteractiveFictionActivity::loadSelectedStory() {
+  if (!runtime || selectedStoryIndex >= storyFiles.size()) {
+    return false;
+  }
+  activeStoryPath = std::string(kStoryDir) + "/" + storyFiles[selectedStoryIndex];
+  return runtime->loadFromStorage(activeStoryPath.c_str()) && runtime->start("Start");
 }
 
 void InteractiveFictionActivity::loop() {
@@ -61,6 +95,24 @@ void InteractiveFictionActivity::loop() {
 
 void InteractiveFictionActivity::onSelectPressed() {
   if (!runtime) {
+    return;
+  }
+
+  if (selectingStory) {
+    if (storyFiles.empty()) {
+      finish();
+      return;
+    }
+    loadFailed = !loadSelectedStory();
+    if (loadFailed) {
+      LOG_ERR("IF", "YSA load/start failed: %s", runtime->getError().c_str());
+      requestUpdate();
+      return;
+    }
+    selectingStory = false;
+    updateWrappedLines();
+    scrollToBottom();
+    requestUpdate();
     return;
   }
 
@@ -90,7 +142,24 @@ void InteractiveFictionActivity::onSelectPressed() {
 void InteractiveFictionActivity::onBackPressed() { finish(); }
 
 void InteractiveFictionActivity::onScrollUp() {
-  if (!runtime || loadFailed) {
+  if (!runtime) {
+    return;
+  }
+
+  if (selectingStory) {
+    if (storyFiles.empty()) {
+      return;
+    }
+    if (selectedStoryIndex == 0) {
+      selectedStoryIndex = storyFiles.size() - 1;
+    } else {
+      selectedStoryIndex--;
+    }
+    requestUpdate();
+    return;
+  }
+
+  if (loadFailed) {
     return;
   }
 
@@ -109,7 +178,20 @@ void InteractiveFictionActivity::onScrollUp() {
 }
 
 void InteractiveFictionActivity::onScrollDown() {
-  if (!runtime || loadFailed) {
+  if (!runtime) {
+    return;
+  }
+
+  if (selectingStory) {
+    if (storyFiles.empty()) {
+      return;
+    }
+    selectedStoryIndex = (selectedStoryIndex + 1) % storyFiles.size();
+    requestUpdate();
+    return;
+  }
+
+  if (loadFailed) {
     return;
   }
 
@@ -143,9 +225,33 @@ void InteractiveFictionActivity::updateWrappedLines() {
   const int charsPerLine =
       std::clamp((renderer.getScreenWidth() - (kContentPadding * 2)) / 10, 18, 42);
 
+  if (selectingStory) {
+    for (size_t i = 0; i < storyFiles.size(); ++i) {
+      std::string optionLine = (i == selectedStoryIndex) ? "> " : "  ";
+      optionLine += storyFiles[i];
+      visibleLines.push_back(std::move(optionLine));
+    }
+    totalWrappedLines = static_cast<int>(visibleLines.size());
+    if (totalWrappedLines > maxVisibleLines) {
+      const int selectedLine = static_cast<int>(selectedStoryIndex);
+      if (selectedLine < scrollOffset) {
+        scrollOffset = selectedLine;
+      } else if (selectedLine >= scrollOffset + maxVisibleLines) {
+        scrollOffset = selectedLine - maxVisibleLines + 1;
+      }
+      const int maxScroll = std::max(0, totalWrappedLines - maxVisibleLines);
+      scrollOffset = std::clamp(scrollOffset, 0, maxScroll);
+    } else {
+      scrollOffset = 0;
+    }
+    return;
+  }
+
   if (loadFailed || !runtime) {
     auto wrapped = TextUtils::WrapText(tr(STR_NO_FILES_FOUND), charsPerLine);
     visibleLines.insert(visibleLines.end(), wrapped.lines.begin(), wrapped.lines.end());
+    auto pathWrapped = TextUtils::WrapText(kStoryDir, charsPerLine);
+    visibleLines.insert(visibleLines.end(), pathWrapped.lines.begin(), pathWrapped.lines.end());
     if (runtime && runtime->hasError()) {
       auto errWrapped = TextUtils::WrapText(runtime->getError(), charsPerLine);
       visibleLines.insert(visibleLines.end(), errWrapped.lines.begin(), errWrapped.lines.end());
@@ -188,7 +294,14 @@ void InteractiveFictionActivity::render(RenderLock&&) {
   const int pageWidth = renderer.getScreenWidth();
   const int contentTop = metrics.headerHeight + metrics.topPadding + kHeaderSpacing;
 
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, "Interactive Fiction");
+  const char* headerTitle = "Interactive Fiction";
+  if (!selectingStory && !activeStoryPath.empty()) {
+    const size_t pos = activeStoryPath.find_last_of('/');
+    if (pos != std::string::npos && pos + 1 < activeStoryPath.size()) {
+      headerTitle = activeStoryPath.c_str() + pos + 1;
+    }
+  }
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, headerTitle);
 
   updateWrappedLines();
   auto wrapped = TextUtils::WrappedText{visibleLines, static_cast<int>(visibleLines.size())};
@@ -201,13 +314,15 @@ void InteractiveFictionActivity::render(RenderLock&&) {
   }
 
   const char* confirmLabel = "";
-  if (runtime && runtime->isWaitingForChoice()) {
+  if (selectingStory) {
+    confirmLabel = tr(STR_SELECT);
+  } else if (runtime && runtime->isWaitingForChoice()) {
     confirmLabel = tr(STR_SELECT);
   } else if (runtime && runtime->isFinished()) {
     confirmLabel = tr(STR_RETRY);
   }
 
-  const bool canScroll = totalWrappedLines > maxVisibleLines;
+  const bool canScroll = selectingStory || totalWrappedLines > maxVisibleLines;
   const auto labels =
       mappedInput.mapLabels(tr(STR_BACK), confirmLabel, canScroll ? tr(STR_DIR_UP) : "", canScroll ? tr(STR_DIR_DOWN) : "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
