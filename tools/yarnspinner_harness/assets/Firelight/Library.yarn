@@ -1,0 +1,86 @@
+title: Library_Initialisation
+---
+<<declare $Carried_Book="None">>
+<<declare $Portal_Destination="None">>
+<<declare $Desk_Book="None">>
+===
+
+
+title: Library_Start
+position: -15,-7
+---
+The imposing facade of Farenstone Manor looms above you. The journey has been long, but you are finally close to solving the mystery.
+Turning your key in the lock of the massive front door you push inside and fight through the cobwebbed front hall to the door of the Library.
+You throw open the door and step forward into a room filled floor to ceiling with curiosities
+<<jump Library>>
+===
+title: Library
+position: -272,239
+---
+<<once>>
+The library of Farenstone Manor is surprisingly well preserved. You struggle to understand how it has escaped the passage of the long decades since the hall was last occupied.
+The wall in front of you is full from floor to ceiling with ornate looking books
+In the center of the room in a shaft of bright sunlight sits an empty reading desk
+<<endonce>>
+-> Examine book case
+    <<jump BookCase>>
+-> Examine desk
+    <<jump ReadingDesk>>
+===
+title: BookCase
+---
+On closer examination there are 2 books that stand out to you.
+The first is a deep green colour, decorated with thick jungle vines that seem to almost move as you look at them
+The second is a deep sandstone red and feels warm to the touch
+-> Take Green Book
+    <<set $Carried_Book="Jungle">>
+    You take the green book in your hand. It emits a slightly menacing leafy rustle
+    <<jump Library>>
+-> Take Red Book
+    <<if $HasBlanket==true>>
+        You try to take the red book in your hand but you feel the heat even before your fingers touch. Wrapping your blanket around the book you manage to fashion a makeshift sling to protect you from it. The book smokes grumpily in your grasp. 
+        <<set $Carried_Book="Desert">>
+    <<else>>
+        The book is so hot it burns your fingers. You drop it back onto the shelf and step away.
+        <<set $Carried_Book="None">>
+    <<endif>>
+    <<jump Library>>
+===
+title: ReadingDesk
+---
+<<if $Desk_Book=="Jungle">>
+=> The Green book spreads it's leafy tendrils across the surface of the dark wood desk
+<<elseif $Desk_Book=="Desert">>
+=> The red book glows slightly against the dark wood, tendrils of smoke curling from its edges
+<<else>>
+=> An extravagant Mahogany reading desk sits in the center of the room, inviting you to sit and read a while.
+<<endif>>
+->Place book <<if $Carried_Book!="None">>
+    <<set $Desk_Book=$Carried_Book>>
+    <<set $Carried_Book="None">>
+    <<jump ReadingDesk>>
+-> Open Book <<if $Desk_Book != "None">>
+    <<jump Portal_open>>
+->Look around
+    <<jump Library>>
+===
+title: ReadingDeskDummy
+position: -54,111
+---
+<<jump ReadingDesk>>
+===
+title: Portal_open
+position: 235,23
+---
+The stone door in front of you starts to crackle and glow with a blue fire. Strange runes coruscate across the surface of the door.
+<<if $Desk_Book=="Jungle">>
+    Splitting down the middle with a sharp crack the door swings open and light floods in. The smell of tropical plants and flowers floods into the library and the view through the door is of deep untamed Jungle.
+    <<jump Jungle_Main>>
+<<elseif $Desk_Book=="Desert">>
+    The heat hits you before the door is more than a few centimeters open and curls of sand start to settle on the Library floor. The view through the opened door is so bright you have to shield your eyes but even then, all you can really see is sand.
+    (To Be Continued...)
+<<else>>
+    The blue fire dances for a few seconds and then disappears. A deep sleepy silence falls across the library.
+<<endif>>
+===
+

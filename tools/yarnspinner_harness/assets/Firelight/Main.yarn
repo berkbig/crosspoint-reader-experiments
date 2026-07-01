@@ -1,0 +1,64 @@
+title: Start
+position: -296,260
+---
+//story variables
+<<declare $StoryState_Danger=0.2>>
+<<declare $StoryState_Chaos=0.1>>
+//inventory
+<<declare $HasRope=false>>
+<<declare $HasFlask=false>>
+<<declare $HasBlanket=false>>
+<<declare $HasTorch=false>>
+<<declare $IsTorchLit=false>>
+
+<<declare $Adventure_Progress=0>>
+<<set $Adventure_Progress=0>>
+<<declare $Treasure=0>>
+<<set $Treasure=0>>
+
+
+<<declare $Random_Chance_Likely=random() > 0.25>>
+<<declare $Random_Chance_Balanced=random() > 0.5>>
+<<declare $Random_Chance_Unlikely=random() > 0.75>>
+//<<declare $Random_Chance_Likely=(random() + random_range(-$StoryState_Chaos,$StoryState_Chaos)) > 0.25>>
+//<<declare $Random_Chance_Balanced=(random() + random_range(-$StoryState_Chaos,$StoryState_Chaos)) > 0.5>>
+//<<declare $Random_Chance_Unlikely=(random() + random_range(-$StoryState_Chaos,$StoryState_Chaos)) > 0.75>>
+
+//initialise story modules
+<<detour Smithy_Initialisation>>
+<<detour Library_Initialisation>>
+<<detour Jungle_Initialisation>>
+<<detour Challenge_Initialisation>>
+<<detour Caves_Initialisation>>
+<<detour Skykin_Initialisation>>
+
+<<jump Library_Start>>
+===
+
+title: Start_Full_Inventory
+position: -618,510
+---
+<<set $HasRope=true>>
+<<set $HasFlask=true>>
+<<set $HasBlanket=true>>
+<<set $HasTorch=true>>
+<<set $IsTorchLit=true>>
+<<jump Start>>
+===
+
+
+title: End
+position: -302,687
+---
+The end - or is it...?
+===
+
+title: EmptyInventory
+position: -302,490
+---
+<<set $HasRope=false>>
+<<set $HasFlask=false>>
+<<set $HasBlanket=false>>
+<<set $HasTorch=false>>
+<<set $IsTorchLit=false>>
+===

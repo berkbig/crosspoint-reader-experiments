@@ -36,6 +36,8 @@ constexpr uint8_t OP_ADD_SALIENCY_CANDIDATE_FROM_NODE = 22;
 constexpr uint8_t OP_SELECT_SALIENCY_CANDIDATE = 23;
 
 constexpr size_t MAX_TRANSCRIPT_LINES = 200;
+constexpr size_t MAX_CACHED_NODES = 32;
+constexpr size_t MAX_CACHED_NODE_BYTES = 24 * 1024;
 
 const std::map<std::string, int> kFunctionMinArity = {
     {"Add", 2},          {"Minus", 2},          {"Multiply", 2},      {"Divide", 2},       {"Modulo", 2},
@@ -122,9 +124,15 @@ std::string YsaRuntime::Value::asString() const {
 
 bool YsaRuntime::loadFromStorage(const char* path) {
   nodes.clear();
+  nodeLastUseTick.clear();
+  nodeEstimatedBytes.clear();
+  cachedNodeBytes = 0;
+  nextNodeUseTick = 1;
+  nodeIndex.clear();
   lineTable.clear();
   initialValues.clear();
   transcript.clear();
+  storagePath = path;
 
   HalFile file;
   if (!Storage.openFileForRead("IF", path, file) || !file) {
@@ -136,14 +144,115 @@ bool YsaRuntime::loadFromStorage(const char* path) {
     return setError("Invalid story size");
   }
 
-  std::vector<uint8_t> bytes(fileSize);
-  const int read = file.read(bytes.data(), fileSize);
-  if (read != static_cast<int>(fileSize)) {
-    return setError("Failed to read full story");
+  auto readExactFile = [&](void* dst, size_t count) -> bool {
+    if (count == 0) {
+      return true;
+    }
+    const int n = file.read(dst, count);
+    return n == static_cast<int>(count);
+  };
+
+  auto readU8File = [&](uint8_t& out) -> bool { return readExactFile(&out, 1); };
+  auto readU16File = [&](uint16_t& out) -> bool { return readExactFile(&out, 2); };
+  auto readU32File = [&](uint32_t& out) -> bool { return readExactFile(&out, 4); };
+  auto readF32File = [&](float& out) -> bool { return readExactFile(&out, 4); };
+  auto readStringFile = [&](std::string& out) -> bool {
+    uint16_t len = 0;
+    if (!readU16File(len)) {
+      return false;
+    }
+    out.assign(len, '\0');
+    if (len == 0) {
+      return true;
+    }
+    return readExactFile(out.data(), len);
+  };
+
+  uint8_t magic[4] = {};
+  if (!readExactFile(magic, sizeof(magic))) {
+    return setError("Story too small");
+  }
+  if (!(magic[0] == 'Y' && magic[1] == 'S' && magic[2] == 'A' && magic[3] == '1')) {
+    return setError("Invalid YSA magic");
   }
 
-  if (!loadFromBuffer(bytes)) {
-    return false;
+  uint16_t nodeCount = 0;
+  uint16_t initialValueCount = 0;
+  uint32_t lineCount = 0;
+  if (!readU16File(version) || !readU16File(nodeCount) || !readU32File(lineCount)) {
+    return setError("Invalid header");
+  }
+  if (version == 2) {
+    if (!readU16File(initialValueCount)) {
+      return setError("Invalid initial value header");
+    }
+  } else if (version != 1) {
+    return setError("Unsupported YSA version");
+  }
+
+  // Build index without loading full file into memory.
+  for (uint16_t i = 0; i < nodeCount; ++i) {
+    std::string nodeName;
+    uint16_t instructionCount = 0;
+    if (!readStringFile(nodeName) || !readU16File(instructionCount)) {
+      return setError("Invalid node header");
+    }
+
+    NodeIndex idx;
+    idx.fileOffset = file.position();  // first instruction
+    idx.instructionCount = instructionCount;
+    nodeIndex[nodeName] = idx;
+
+    for (uint16_t j = 0; j < instructionCount; ++j) {
+      uint16_t instructionSize = 0;
+      if (!readU16File(instructionSize) || !file.seekCur(instructionSize)) {
+        return setError("Invalid instruction size");
+      }
+    }
+  }
+
+  // Parse line table
+  for (uint32_t i = 0; i < lineCount; ++i) {
+    std::string lineId;
+    std::string text;
+    if (!readStringFile(lineId) || !readStringFile(text)) {
+      return setError("Invalid line table");
+    }
+    lineTable[lineId] = text;
+  }
+
+  // Parse initial values
+  for (uint16_t i = 0; i < initialValueCount; ++i) {
+    std::string varName;
+    uint8_t valueType = 0;
+    if (!readStringFile(varName) || !readU8File(valueType)) {
+      return setError("Invalid initial value");
+    }
+
+    Value value = Value::fromFloat(0.0f);
+    switch (valueType) {
+      case 0: {
+        float f = 0.0f;
+        if (!readF32File(f)) return setError("Invalid float initial value");
+        value = Value::fromFloat(f);
+        break;
+      }
+      case 1: {
+        uint8_t b = 0;
+        if (!readU8File(b)) return setError("Invalid bool initial value");
+        value = Value::fromBool(b != 0);
+        break;
+      }
+      case 2: {
+        std::string s;
+        if (!readStringFile(s)) return setError("Invalid string initial value");
+        value = Value::fromString(s);
+        break;
+      }
+      default:
+        return setError("Invalid initial value type");
+    }
+    initialValues[varName] = std::move(value);
   }
 
   errored = false;
@@ -151,14 +260,182 @@ bool YsaRuntime::loadFromStorage(const char* path) {
   return true;
 }
 
+bool YsaRuntime::ensureNodeLoaded(const std::string& nodeName, const std::set<std::string>* extraPinnedNodes) {
+  // If already in cache, we're done
+  if (nodes.find(nodeName) != nodes.end()) {
+    touchNode(nodeName);
+    trimNodeCache(extraPinnedNodes, &nodeName);
+    return true;
+  }
+
+  // Must be in index for us to load it
+  auto indexIt = nodeIndex.find(nodeName);
+  if (indexIt == nodeIndex.end()) {
+   return setError(std::string("Node not found: ") + nodeName);
+  }
+
+  const NodeIndex& idx = indexIt->second;
+
+  // Reopen file to read just this node
+  HalFile file;
+  if (!Storage.openFileForRead("IF", storagePath.c_str(), file) || !file) {
+   return setError(std::string("Failed to reopen story: ") + storagePath);
+  }
+
+  if (!file.seek(idx.fileOffset)) {
+   return setError("Failed to seek to node");
+  }
+
+  auto readExactFile = [&](void* dst, size_t count) -> bool {
+   if (count == 0) {
+     return true;
+   }
+   const int n = file.read(dst, count);
+   return n == static_cast<int>(count);
+  };
+
+  auto readU16File = [&](uint16_t& out) -> bool { return readExactFile(&out, 2); };
+
+  // Parse just this node's instructions
+  Node node;
+  node.instructions.reserve(idx.instructionCount);
+
+  for (uint16_t j = 0; j < idx.instructionCount; ++j) {
+   uint16_t instructionSize = 0;
+   if (!readU16File(instructionSize)) {
+     return setError("Invalid instruction size during lazy load");
+   }
+
+   std::vector<uint8_t> instructionData(instructionSize);
+   if (!readExactFile(instructionData.data(), instructionSize)) {
+     return setError("Invalid instruction payload during lazy load");
+   }
+
+   size_t offset = 0;
+
+   Instruction ins;
+   uint8_t operandCount = 0;
+   if (!readU8(instructionData, offset, ins.opcode) || !readU8(instructionData, offset, operandCount)) {
+     return setError("Invalid instruction header during lazy load");
+   }
+
+   for (uint8_t k = 0; k < operandCount; ++k) {
+     uint8_t typeRaw = 0;
+     if (!readU8(instructionData, offset, typeRaw)) {
+       return setError("Invalid operand type during lazy load");
+     }
+     Operand operand;
+     operand.type = static_cast<OperandType>(typeRaw);
+     switch (operand.type) {
+       case OperandType::U16:
+         if (!readU16(instructionData, offset, operand.u16Value)) return setError("Invalid u16 operand during lazy load");
+         break;
+       case OperandType::Bool: {
+         uint8_t value = 0;
+         if (!readU8(instructionData, offset, value)) return setError("Invalid bool operand during lazy load");
+         operand.boolValue = value != 0;
+         break;
+       }
+       case OperandType::String:
+         if (!readString(instructionData, offset, operand.stringValue)) return setError("Invalid string operand during lazy load");
+         break;
+       case OperandType::Float:
+         if (!readF32(instructionData, offset, operand.floatValue)) return setError("Invalid float operand during lazy load");
+         break;
+       default:
+         return setError("Unknown operand type during lazy load");
+     }
+     ins.operands.push_back(std::move(operand));
+   }
+
+   if (offset != instructionData.size()) {
+     return setError("Instruction length mismatch during lazy load");
+   }
+   node.instructions.push_back(std::move(ins));
+  }
+
+  // Cache the parsed node
+  const size_t estimatedBytes = estimateNodeBytes(node);
+  nodes[nodeName] = std::move(node);
+  nodeEstimatedBytes[nodeName] = estimatedBytes;
+  cachedNodeBytes += estimatedBytes;
+  touchNode(nodeName);
+  trimNodeCache(extraPinnedNodes, &nodeName);
+  return true;
+}
+
+void YsaRuntime::touchNode(const std::string& nodeName) {
+  nodeLastUseTick[nodeName] = nextNodeUseTick++;
+}
+
+size_t YsaRuntime::estimateNodeBytes(const Node& node) const {
+  size_t total = sizeof(Node);
+  total += node.instructions.capacity() * sizeof(Instruction);
+  for (const Instruction& ins : node.instructions) {
+    total += ins.operands.capacity() * sizeof(Operand);
+    for (const Operand& op : ins.operands) {
+      total += op.stringValue.capacity();
+    }
+  }
+  return total;
+}
+
+void YsaRuntime::trimNodeCache(const std::set<std::string>* extraPinnedNodes, const std::string* justLoadedNode) {
+  if (nodes.size() <= MAX_CACHED_NODES && cachedNodeBytes <= MAX_CACHED_NODE_BYTES) {
+    return;
+  }
+
+  std::set<std::string> pinned;
+  if (justLoadedNode) {
+    pinned.insert(*justLoadedNode);
+  }
+  for (const Frame& frame : frames) {
+    pinned.insert(frame.nodeName);
+  }
+  if (extraPinnedNodes) {
+    pinned.insert(extraPinnedNodes->begin(), extraPinnedNodes->end());
+  }
+
+  while (nodes.size() > MAX_CACHED_NODES || cachedNodeBytes > MAX_CACHED_NODE_BYTES) {
+    auto candidateIt = nodes.end();
+    uint32_t oldestTick = std::numeric_limits<uint32_t>::max();
+    for (auto it = nodes.begin(); it != nodes.end(); ++it) {
+      if (pinned.count(it->first) > 0) {
+        continue;
+      }
+      const auto tickIt = nodeLastUseTick.find(it->first);
+      const uint32_t tick = (tickIt != nodeLastUseTick.end()) ? tickIt->second : 0;
+      if (tick < oldestTick) {
+        oldestTick = tick;
+        candidateIt = it;
+      }
+    }
+
+    if (candidateIt == nodes.end()) {
+      return;
+    }
+
+    const auto bytesIt = nodeEstimatedBytes.find(candidateIt->first);
+    if (bytesIt != nodeEstimatedBytes.end()) {
+      if (cachedNodeBytes >= bytesIt->second) {
+        cachedNodeBytes -= bytesIt->second;
+      } else {
+        cachedNodeBytes = 0;
+      }
+      nodeEstimatedBytes.erase(bytesIt);
+    }
+    nodeLastUseTick.erase(candidateIt->first);
+    nodes.erase(candidateIt);
+  }
+}
+
 bool YsaRuntime::start(const std::string& nodeName) {
   if (!hasStory()) {
     return setError("No story loaded");
   }
 
-  auto it = nodes.find(nodeName);
-  if (it == nodes.end()) {
-    return setError(std::string("Missing start node: ") + nodeName);
+  if (!ensureNodeLoaded(nodeName)) {
+    return false;
   }
 
   resetRuntimeState();
@@ -182,6 +459,8 @@ bool YsaRuntime::chooseSelectedOption() {
   pendingOptions.clear();
   waitingForChoice = false;
   selectedOption = -1;
+  // Start a fresh page after each confirmed choice.
+  transcript.clear();
   frames.back().ip += 1;
   return runUntilPause();
 }
@@ -250,6 +529,7 @@ bool YsaRuntime::executeInstruction() {
   if (nodeIt == nodes.end()) {
     return setError(std::string("Node not found: ") + frame.nodeName);
   }
+  touchNode(frame.nodeName);
   const Node& node = nodeIt->second;
 
   if (frame.ip < 0 || frame.ip >= static_cast<int>(node.instructions.size())) {
@@ -335,30 +615,38 @@ bool YsaRuntime::executeInstruction() {
       const Operand* dest = requireOperand(ins, 0, OperandType::U16);
       if (!dest) return false;
       if (stack.empty()) return setError("Stack underflow in jump_if_false");
-      const bool cond = stack.back().asBool();  // peek
+      const bool cond = stack.back().asBool();
       frame.ip = cond ? frame.ip + 1 : static_cast<int>(dest->u16Value);
       return true;
     }
     case OP_PEEK_AND_JUMP:
       if (stack.empty()) return setError("Stack underflow in peek_and_jump");
-      frame.ip = static_cast<int>(stack.back().asFloat());
+      {
+        size_t jumpValueIndex = stack.size() - 1;
+        if (stack.back().type == ValueType::Bool && stack.size() >= 2) {
+          // Some compiled stories leave [destination, bool] on the stack.
+          jumpValueIndex = stack.size() - 2;
+        }
+        frame.ip = static_cast<int>(stack[jumpValueIndex].asFloat());
+      }
       return true;
     case OP_RUN_NODE: {
       const Operand* nodeName = requireOperand(ins, 0, OperandType::String);
       if (!nodeName) return false;
-      if (nodes.find(nodeName->stringValue) == nodes.end()) {
-        return setError(std::string("Node not found: ") + nodeName->stringValue);
+      if (!ensureNodeLoaded(nodeName->stringValue)) {
+        return false;
       }
       markVisited(frame.nodeName);
-      frame.nodeName = nodeName->stringValue;
-      frame.ip = 0;
+      // RUN_NODE is a jump: replace the whole call stack, do not return to detour callers.
+      frames.clear();
+      frames.push_back({nodeName->stringValue, 0});
       return true;
     }
     case OP_DETOUR_TO_NODE: {
       const Operand* nodeName = requireOperand(ins, 0, OperandType::String);
       if (!nodeName) return false;
-      if (nodes.find(nodeName->stringValue) == nodes.end()) {
-        return setError(std::string("Node not found: ") + nodeName->stringValue);
+      if (!ensureNodeLoaded(nodeName->stringValue)) {
+        return false;
       }
       frame.ip += 1;
       frames.push_back({nodeName->stringValue, 0});
@@ -368,20 +656,21 @@ bool YsaRuntime::executeInstruction() {
       if (stack.empty()) return setError("Stack underflow in peek_and_run_node");
       const std::string target = stack.back().asString();
       stack.pop_back();
-      if (nodes.find(target) == nodes.end()) {
-        return setError(std::string("Node not found: ") + target);
+      if (!ensureNodeLoaded(target)) {
+        return false;
       }
       markVisited(frame.nodeName);
-      frame.nodeName = target;
-      frame.ip = 0;
+      // PEEK_AND_RUN_NODE is also a jump: replace the whole call stack.
+      frames.clear();
+      frames.push_back({target, 0});
       return true;
     }
     case OP_PEEK_AND_DETOUR: {
       if (stack.empty()) return setError("Stack underflow in peek_and_detour");
       const std::string target = stack.back().asString();
       stack.pop_back();
-      if (nodes.find(target) == nodes.end()) {
-        return setError(std::string("Node not found: ") + target);
+      if (!ensureNodeLoaded(target)) {
+        return false;
       }
       frame.ip += 1;
       frames.push_back({target, 0});
@@ -412,7 +701,16 @@ bool YsaRuntime::executeInstruction() {
       const Operand* op = requireOperand(ins, 0, OperandType::String);
       if (!op) return false;
       auto it = state.variables.find(op->stringValue);
-      stack.push_back(it != state.variables.end() ? it->second : Value::fromFloat(0.0f));
+      if (it != state.variables.end()) {
+        stack.push_back(it->second);
+      } else if (nodes.find(op->stringValue) != nodes.end()) {
+        Value smartValue;
+        std::set<std::string> activeNodes;
+        if (!evaluateSmartVariable(op->stringValue, smartValue, activeNodes)) return false;
+        stack.push_back(smartValue);
+      } else {
+        stack.push_back(Value::fromFloat(0.0f));
+      }
       frame.ip += 1;
       return true;
     }
@@ -449,7 +747,12 @@ bool YsaRuntime::executeInstruction() {
       const Operand* score = requireOperand(ins, 1, OperandType::U16);
       const Operand* dest = requireOperand(ins, 2, OperandType::U16);
       if (!id || !score || !dest) return false;
-      saliencyCandidates.push_back({id->stringValue, score->u16Value, dest->u16Value});
+      if (stack.empty()) return setError("Stack underflow in add_saliency_candidate");
+      const bool conditionPassed = stack.back().asBool();
+      stack.pop_back();
+      if (conditionPassed) {
+        saliencyCandidates.push_back({id->stringValue, score->u16Value, dest->u16Value});
+      }
       frame.ip += 1;
       return true;
     }
@@ -457,17 +760,61 @@ bool YsaRuntime::executeInstruction() {
       const Operand* nodeName = requireOperand(ins, 0, OperandType::String);
       const Operand* dest = requireOperand(ins, 1, OperandType::U16);
       if (!nodeName || !dest) return false;
-      const int score = state.visitedNodes.count(nodeName->stringValue) > 0 ? 0 : 1;
-      saliencyCandidates.push_back({nodeName->stringValue, score, dest->u16Value});
+      bool conditionPassed = true;
+      const std::string conditionNode =
+          "$Yarn.Internal." + frame.nodeName + "." + nodeName->stringValue + ".Condition.0";
+      if (nodes.find(conditionNode) != nodes.end() || nodeIndex.find(conditionNode) != nodeIndex.end()) {
+        Value conditionValue;
+        std::set<std::string> activeNodes;
+        if (!evaluateSmartVariable(conditionNode, conditionValue, activeNodes)) {
+          return false;
+        }
+        conditionPassed = conditionValue.asBool();
+      }
+      if (conditionPassed) {
+        const auto visitIt = state.visitCounts.find(nodeName->stringValue);
+        const int score = (visitIt != state.visitCounts.end() && visitIt->second > 0) ? 0 : 1;
+        saliencyCandidates.push_back({nodeName->stringValue, score, dest->u16Value});
+      }
       frame.ip += 1;
       return true;
     }
     case OP_SELECT_SALIENCY_CANDIDATE: {
       if (saliencyCandidates.empty()) return setError("No saliency candidates");
-      const auto best =
-          std::max_element(saliencyCandidates.begin(), saliencyCandidates.end(),
-                           [](const SaliencyCandidate& a, const SaliencyCandidate& b) { return a.complexityScore < b.complexityScore; });
-      stack.push_back(Value::fromFloat(static_cast<float>(best->destination)));
+      int bestScore = std::numeric_limits<int>::min();
+      std::vector<size_t> bestScoreIndices;
+      bestScoreIndices.reserve(saliencyCandidates.size());
+      for (size_t i = 0; i < saliencyCandidates.size(); ++i) {
+        const int score = saliencyCandidates[i].complexityScore;
+        if (score > bestScore) {
+          bestScore = score;
+          bestScoreIndices.clear();
+          bestScoreIndices.push_back(i);
+        } else if (score == bestScore) {
+          bestScoreIndices.push_back(i);
+        }
+      }
+
+      int leastSelected = std::numeric_limits<int>::max();
+      std::vector<size_t> leastRecentlyViewedIndices;
+      leastRecentlyViewedIndices.reserve(bestScoreIndices.size());
+      for (size_t idx : bestScoreIndices) {
+        const auto countIt = state.saliencySelectionCounts.find(saliencyCandidates[idx].id);
+        const int selectedCount = countIt != state.saliencySelectionCounts.end() ? countIt->second : 0;
+        if (selectedCount < leastSelected) {
+          leastSelected = selectedCount;
+          leastRecentlyViewedIndices.clear();
+          leastRecentlyViewedIndices.push_back(idx);
+        } else if (selectedCount == leastSelected) {
+          leastRecentlyViewedIndices.push_back(idx);
+        }
+      }
+
+      std::uniform_int_distribution<size_t> dist(0, leastRecentlyViewedIndices.size() - 1);
+      const size_t chosen = leastRecentlyViewedIndices[dist(state.rng)];
+      state.saliencySelectionCounts[saliencyCandidates[chosen].id] += 1;
+
+      stack.push_back(Value::fromFloat(static_cast<float>(saliencyCandidates[chosen].destination)));
       stack.push_back(Value::fromBool(true));
       saliencyCandidates.clear();
       frame.ip += 1;
@@ -487,7 +834,6 @@ bool YsaRuntime::setError(const std::string& msg) {
 }
 
 void YsaRuntime::markVisited(const std::string& nodeName) {
-  state.visitedNodes.insert(nodeName);
   state.visitCounts[nodeName] += 1;
 }
 
@@ -543,12 +889,12 @@ bool YsaRuntime::readString(const std::vector<uint8_t>& data, size_t& offset, st
   return true;
 }
 
-bool YsaRuntime::loadFromBuffer(const std::vector<uint8_t>& data) {
+bool YsaRuntime::buildNodeIndex(const std::vector<uint8_t>& headerData) {
   size_t offset = 0;
-  if (data.size() < 8) {
+  if (headerData.size() < 8) {
     return setError("Story too small");
   }
-  if (!(data[0] == 'Y' && data[1] == 'S' && data[2] == 'A' && data[3] == '1')) {
+  if (!(headerData[0] == 'Y' && headerData[1] == 'S' && headerData[2] == 'A' && headerData[3] == '1')) {
     return setError("Invalid YSA magic");
   }
   offset = 4;
@@ -556,93 +902,57 @@ bool YsaRuntime::loadFromBuffer(const std::vector<uint8_t>& data) {
   uint16_t nodeCount = 0;
   uint16_t initialValueCount = 0;
   uint32_t lineCount = 0;
-  if (!readU16(data, offset, version) || !readU16(data, offset, nodeCount) || !readU32(data, offset, lineCount)) {
+  if (!readU16(headerData, offset, version) || !readU16(headerData, offset, nodeCount) || !readU32(headerData, offset, lineCount)) {
     return setError("Invalid header");
   }
   if (version == 2) {
-    if (!readU16(data, offset, initialValueCount)) {
+    if (!readU16(headerData, offset, initialValueCount)) {
       return setError("Invalid initial value header");
     }
   } else if (version != 1) {
     return setError("Unsupported YSA version");
   }
 
-  nodes.clear();
-  lineTable.clear();
-  initialValues.clear();
-
+  // Build index: store offset of first instruction for each node
   for (uint16_t i = 0; i < nodeCount; ++i) {
     std::string nodeName;
     uint16_t instructionCount = 0;
-    if (!readString(data, offset, nodeName) || !readU16(data, offset, instructionCount)) {
+    
+    if (!readString(headerData, offset, nodeName) || !readU16(headerData, offset, instructionCount)) {
       return setError("Invalid node header");
     }
 
-    Node node;
-    node.instructions.reserve(instructionCount);
+    // Record where instructions START (after name + instructionCount)
+    NodeIndex idx;
+    idx.fileOffset = offset;  // This is the offset of the FIRST instruction
+    idx.instructionCount = instructionCount;
+    nodeIndex[nodeName] = idx;
+
+    // Skip past instructions without parsing
     for (uint16_t j = 0; j < instructionCount; ++j) {
       uint16_t instructionSize = 0;
-      if (!readU16(data, offset, instructionSize) || offset + instructionSize > data.size()) {
+      if (!readU16(headerData, offset, instructionSize) || offset + instructionSize > headerData.size()) {
         return setError("Invalid instruction size");
       }
-      const size_t instructionEnd = offset + instructionSize;
-
-      Instruction ins;
-      uint8_t operandCount = 0;
-      if (!readU8(data, offset, ins.opcode) || !readU8(data, offset, operandCount)) {
-        return setError("Invalid instruction header");
-      }
-
-      for (uint8_t k = 0; k < operandCount; ++k) {
-        uint8_t typeRaw = 0;
-        if (!readU8(data, offset, typeRaw)) {
-          return setError("Invalid operand type");
-        }
-        Operand operand;
-        operand.type = static_cast<OperandType>(typeRaw);
-        switch (operand.type) {
-          case OperandType::U16:
-            if (!readU16(data, offset, operand.u16Value)) return setError("Invalid u16 operand");
-            break;
-          case OperandType::Bool: {
-            uint8_t value = 0;
-            if (!readU8(data, offset, value)) return setError("Invalid bool operand");
-            operand.boolValue = value != 0;
-            break;
-          }
-          case OperandType::String:
-            if (!readString(data, offset, operand.stringValue)) return setError("Invalid string operand");
-            break;
-          case OperandType::Float:
-            if (!readF32(data, offset, operand.floatValue)) return setError("Invalid float operand");
-            break;
-          default:
-            return setError("Unknown operand type");
-        }
-        ins.operands.push_back(std::move(operand));
-      }
-
-      if (offset != instructionEnd) {
-        return setError("Instruction length mismatch");
-      }
-      node.instructions.push_back(std::move(ins));
+      offset += instructionSize;
     }
-    nodes[nodeName] = std::move(node);
   }
 
+  // Parse line table
   for (uint32_t i = 0; i < lineCount; ++i) {
     std::string lineId;
     std::string text;
-    if (!readString(data, offset, lineId) || !readString(data, offset, text)) {
+    if (!readString(headerData, offset, lineId) || !readString(headerData, offset, text)) {
       return setError("Invalid line table");
     }
     lineTable[lineId] = text;
   }
 
+  // Parse initial values
   for (uint16_t i = 0; i < initialValueCount; ++i) {
     std::string varName;
     uint8_t valueType = 0;
-    if (!readString(data, offset, varName) || !readU8(data, offset, valueType)) {
+    if (!readString(headerData, offset, varName) || !readU8(headerData, offset, valueType)) {
       return setError("Invalid initial value");
     }
 
@@ -650,31 +960,28 @@ bool YsaRuntime::loadFromBuffer(const std::vector<uint8_t>& data) {
     switch (valueType) {
       case 0: {
         float f = 0;
-        if (!readF32(data, offset, f)) return setError("Invalid float initial value");
+        if (!readF32(headerData, offset, f)) return setError("Invalid float initial value");
         value = Value::fromFloat(f);
         break;
       }
       case 1: {
         uint8_t b = 0;
-        if (!readU8(data, offset, b)) return setError("Invalid bool initial value");
+        if (!readU8(headerData, offset, b)) return setError("Invalid bool initial value");
         value = Value::fromBool(b != 0);
         break;
       }
       case 2: {
         std::string s;
-        if (!readString(data, offset, s)) return setError("Invalid string initial value");
+        if (!readString(headerData, offset, s)) return setError("Invalid string initial value");
         value = Value::fromString(s);
         break;
       }
       default:
-        return setError("Unknown initial value type");
+        return setError("Invalid initial value type");
     }
     initialValues[varName] = std::move(value);
   }
 
-  if (offset != data.size()) {
-    return setError("Trailing data in story");
-  }
   return true;
 }
 
@@ -779,7 +1086,10 @@ YsaRuntime::Value YsaRuntime::callFunction(std::string name, std::vector<Value> 
   if (name == "Xor") return Value::fromBool(args[0].asBool() ^ args[1].asBool());
   if (name == "Not") return Value::fromBool(!args[0].asBool());
 
-  if (name == "visited") return Value::fromBool(state.visitedNodes.count(args[0].asString()) > 0);
+  if (name == "visited") {
+    const auto it = state.visitCounts.find(args[0].asString());
+    return Value::fromBool(it != state.visitCounts.end() && it->second > 0);
+  }
   if (name == "visited_count") {
     const auto it = state.visitCounts.find(args[0].asString());
     return Value::fromFloat(static_cast<float>(it != state.visitCounts.end() ? it->second : 0));
@@ -824,6 +1134,173 @@ YsaRuntime::Value YsaRuntime::callFunction(std::string name, std::vector<Value> 
   return Value::fromBool(false);
 }
 
+bool YsaRuntime::evaluateSmartVariable(const std::string& variableName,
+                                       Value& outValue,
+                                       std::set<std::string>& activeNodes) {
+  if (activeNodes.count(variableName) > 0) {
+    return setError(std::string("Recursive smart variable: ") + variableName);
+  }
+
+  if (!ensureNodeLoaded(variableName, &activeNodes)) {
+    return false;
+  }
+
+  activeNodes.insert(variableName);
+  touchNode(variableName);
+  std::vector<Value> evalStack;
+  int ip = 0;
+  const Node& node = nodes[variableName];
+
+  while (ip >= 0 && ip < static_cast<int>(node.instructions.size())) {
+    const Instruction& ins = node.instructions[static_cast<size_t>(ip)];
+    switch (ins.opcode) {
+      case OP_PUSH_STRING: {
+        const Operand* op = requireOperand(ins, 0, OperandType::String);
+        if (!op) {
+          activeNodes.erase(variableName);
+          return false;
+        }
+        evalStack.push_back(Value::fromString(op->stringValue));
+        ip += 1;
+        break;
+      }
+      case OP_PUSH_FLOAT: {
+        const Operand* op = requireOperand(ins, 0, OperandType::Float);
+        if (!op) {
+          activeNodes.erase(variableName);
+          return false;
+        }
+        evalStack.push_back(Value::fromFloat(op->floatValue));
+        ip += 1;
+        break;
+      }
+      case OP_PUSH_BOOL: {
+        const Operand* op = requireOperand(ins, 0, OperandType::Bool);
+        if (!op) {
+          activeNodes.erase(variableName);
+          return false;
+        }
+        evalStack.push_back(Value::fromBool(op->boolValue));
+        ip += 1;
+        break;
+      }
+      case OP_PUSH_VARIABLE: {
+        const Operand* op = requireOperand(ins, 0, OperandType::String);
+        if (!op) {
+          activeNodes.erase(variableName);
+          return false;
+        }
+        auto it = state.variables.find(op->stringValue);
+        if (it != state.variables.end()) {
+          evalStack.push_back(it->second);
+        } else if (nodeIndex.find(op->stringValue) != nodeIndex.end()) {
+          Value nestedValue;
+          if (!evaluateSmartVariable(op->stringValue, nestedValue, activeNodes)) {
+            activeNodes.erase(variableName);
+            return false;
+          }
+          evalStack.push_back(nestedValue);
+        } else {
+          evalStack.push_back(Value::fromFloat(0.0f));
+        }
+        ip += 1;
+        break;
+      }
+      case OP_STORE_VARIABLE: {
+        const Operand* op = requireOperand(ins, 0, OperandType::String);
+        if (!op) {
+          activeNodes.erase(variableName);
+          return false;
+        }
+        if (evalStack.empty()) {
+          activeNodes.erase(variableName);
+          return setError("Stack underflow in smart variable store");
+        }
+        state.variables[op->stringValue] = evalStack.back();
+        ip += 1;
+        break;
+      }
+      case OP_CALL_FUNCTION: {
+        const Operand* op = requireOperand(ins, 0, OperandType::String);
+        if (!op) {
+          activeNodes.erase(variableName);
+          return false;
+        }
+        if (evalStack.empty()) {
+          activeNodes.erase(variableName);
+          return setError("Stack underflow reading smart variable call arity");
+        }
+        const int arity = static_cast<int>(evalStack.back().asFloat());
+        evalStack.pop_back();
+        if (arity < 0 || static_cast<int>(evalStack.size()) < arity) {
+          activeNodes.erase(variableName);
+          return setError("Invalid smart variable call arity");
+        }
+        std::vector<Value> args;
+        args.reserve(static_cast<size_t>(arity));
+        for (int i = 0; i < arity; ++i) {
+          args.push_back(evalStack.back());
+          evalStack.pop_back();
+        }
+        std::reverse(args.begin(), args.end());
+        evalStack.push_back(callFunction(op->stringValue, std::move(args)));
+        if (errored) {
+          activeNodes.erase(variableName);
+          return false;
+        }
+        ip += 1;
+        break;
+      }
+      case OP_POP:
+        if (evalStack.empty()) {
+          activeNodes.erase(variableName);
+          return setError("Stack underflow in smart variable pop");
+        }
+        evalStack.pop_back();
+        ip += 1;
+        break;
+      case OP_JUMP_TO: {
+        const Operand* dest = requireOperand(ins, 0, OperandType::U16);
+        if (!dest) {
+          activeNodes.erase(variableName);
+          return false;
+        }
+        ip = static_cast<int>(dest->u16Value);
+        break;
+      }
+      case OP_JUMP_IF_FALSE: {
+        const Operand* dest = requireOperand(ins, 0, OperandType::U16);
+        if (!dest) {
+          activeNodes.erase(variableName);
+          return false;
+        }
+        if (evalStack.empty()) {
+          activeNodes.erase(variableName);
+          return setError("Stack underflow in smart variable jump_if_false");
+        }
+        const bool cond = evalStack.back().asBool();
+        ip = cond ? ip + 1 : static_cast<int>(dest->u16Value);
+        break;
+      }
+      case OP_RETURN:
+      case OP_STOP:
+        ip = static_cast<int>(node.instructions.size());
+        break;
+      default:
+        activeNodes.erase(variableName);
+        return setError(std::string("Unsupported opcode in smart variable: ") + std::to_string(ins.opcode));
+    }
+  }
+
+  if (evalStack.empty()) {
+    activeNodes.erase(variableName);
+    return setError(std::string("Smart variable produced no value: ") + variableName);
+  }
+  outValue = evalStack.back();
+  activeNodes.erase(variableName);
+  return true;
+}
+
 int YsaRuntime::firstAvailableOption() const {
   for (size_t i = 0; i < pendingOptions.size(); ++i) {
     if (pendingOptions[i].available) {
@@ -832,4 +1309,3 @@ int YsaRuntime::firstAvailableOption() const {
   }
   return -1;
 }
-

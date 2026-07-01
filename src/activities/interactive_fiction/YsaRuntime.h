@@ -19,7 +19,7 @@ class YsaRuntime {
   bool chooseSelectedOption();
   bool moveSelection(int delta);
 
-  bool hasStory() const { return !nodes.empty(); }
+  bool hasStory() const { return !nodes.empty() || !nodeIndex.empty(); }
   bool isWaitingForChoice() const { return waitingForChoice; }
   bool isFinished() const { return finished; }
   bool hasError() const { return errored; }
@@ -70,8 +70,8 @@ class YsaRuntime {
 
   struct RuntimeState {
     std::map<std::string, Value> variables;
-    std::set<std::string> visitedNodes;
     std::map<std::string, int> visitCounts;
+    std::map<std::string, int> saliencySelectionCounts;
     std::mt19937 rng{std::random_device{}()};
   };
 
@@ -87,8 +87,19 @@ class YsaRuntime {
     int destination = -1;
   };
 
+  struct NodeIndex {
+    size_t fileOffset = 0;
+    uint16_t instructionCount = 0;
+  };
+
   uint16_t version = 0;
-  std::map<std::string, Node> nodes;
+  std::map<std::string, Node> nodes;  // Parsed nodes cache
+  std::map<std::string, uint32_t> nodeLastUseTick;
+  std::map<std::string, size_t> nodeEstimatedBytes;
+  size_t cachedNodeBytes = 0;
+  uint32_t nextNodeUseTick = 1;
+  std::map<std::string, NodeIndex> nodeIndex;  // All nodes: offset + count (no file buffer)
+  std::string storagePath;  // Path for reopening file on-demand
   std::map<std::string, std::string> lineTable;
   std::map<std::string, Value> initialValues;
 
@@ -117,13 +128,17 @@ class YsaRuntime {
   bool readF32(const std::vector<uint8_t>& data, size_t& offset, float& out) const;
   bool readString(const std::vector<uint8_t>& data, size_t& offset, std::string& out) const;
 
-  bool loadFromBuffer(const std::vector<uint8_t>& data);
+  bool buildNodeIndex(const std::vector<uint8_t>& headerData);
+  bool ensureNodeLoaded(const std::string& nodeName, const std::set<std::string>* extraPinnedNodes = nullptr);
+  void touchNode(const std::string& nodeName);
+  size_t estimateNodeBytes(const Node& node) const;
+  void trimNodeCache(const std::set<std::string>* extraPinnedNodes, const std::string* justLoadedNode);
 
   const Operand* requireOperand(const Instruction& ins, size_t index, OperandType type);
   std::vector<Value> popSubstitutions(int count);
   std::string lookupLine(const std::string& lineId) const;
   std::string applySubstitutions(const std::string& text, const std::vector<Value>& substitutions) const;
   Value callFunction(std::string name, std::vector<Value> args);
+  bool evaluateSmartVariable(const std::string& variableName, Value& outValue, std::set<std::string>& activeNodes);
   int firstAvailableOption() const;
 };
-

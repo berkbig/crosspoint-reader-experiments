@@ -1,0 +1,119 @@
+title: Caves_Initialisation
+---
+<<declare $SpiderRage=0>>
+===
+
+title: Test_Caves_Chapter
+---
+<<detour Debug_Fill_Inventory>>
+<<detour Cave_Main>>
+<<jump Test_Caves_Chapter>>
+===
+
+
+title: Cave_Main
+---
+<<if $HasTorch==true and $IsTorchLit==true>>
+<<detour CaveEnvironment>>
+<<else>>
+<<detour CaveDark>>
+<<endif>>
+<<jump Cave_Main>>
+===
+
+title: CaveDark
+when: always
+---
+You stumble around in the dark, cobwebs tanglng around your face and arms. 
+===
+title: CaveDark
+when: always
+---
+An inhuman shriek erupts from the darkness in front of you causing you to turn around and run the other way 
+===
+title: CaveDark
+when: always
+---
+DIsturbing skittering sounds seem to surround you as you blunder forwards. YOu begin to regret your life choices
+===
+title: CaveDark
+when: $Random_Chance_Balanced==true
+---
+You trip and fall, bouncing against the sides of a deep pit until you pass from consciousness
+<<jump End>>
+===
+title: CaveDark
+when: $Random_Chance_Unlikely==true
+---
+You run headlong into a mass of sticky spider webs. The last thing you hear is the skittering of thousands of tiny feet as the nest of baby spiders wakes. 
+They wake hungry...
+<<jump End>>
+===
+
+
+title: CaveEnvironment
+when: always
+---
+You walk carefully through the caves. Shadows flicker across the walls around you and you catch glimpss of other rooms through holes in the wall
+===
+title: CaveEnvironment
+when: always
+---
+Squeezing your way through a tight gap you feel cobwebs ripping against your face, and hear a skittering noise rushing away.
+<<set $SpiderRage=$SpiderRage+1>>
+===
+title: CaveEnvironment
+when: $IsTorchLit == true and $Random_Chance_Likely==true
+---
+You walk into a larger cavern. Spiderwebs cover every surface except a single exit ahead.
+->Clear the cobwebs with your torch
+    You swing your torch around the room and the cobwebs disappear in a quick burst of flame
+    <<set $SpiderRage=$SpiderRage+4>>
+    <<detour Cave_Rewards>>
+->Carry on
+   <<return>>
+===
+title: CaveEnvironment
+when: $Random_Chance_Unlikely==true
+---
+Sunlight streams from a gap in the cave wall in front of you - sounds drift in from the jungle beyond
+->Leave Caves
+    You step blinking back in to the sunlight.
+    <<jump Jungle_Main>>
+->Carry on Exploring
+    <<return>>
+===
+
+title: Cave_Rewards
+when: always
+---
+You reveal nothing of interest in your exploration
+===
+title: Cave_Rewards
+when: always
+---
+You spot a small chest in the corner of the cave and open it
+<<detour Random_Reward>>
+===
+
+title: Random_Reward
+when: always
+---
+<<if $Random_Chance_Unlikely==true>>
+    You clip a grappling rope to your belt
+    <<set $HasRope=true>>
+<<elseif $Random_Chance_Likely==true>>
+    A half full flask of clear water is added to your backpack
+    <<set $HasFlask=true>>
+<<else>>
+    You add a small pile of gold coins to your treasure pile
+    <<set $Treasure=$Treasure+random_range(50,100)>>
+<<endif>>
+<<set $Adventure_Progress=$Adventure_Progress+1>>
+===
+title: Random_Reward
+when: $Random_Chance_Balanced==true
+---
+You put a thick woolen blanket in your backpack
+<<set $HasBlanket=true>>
+===
